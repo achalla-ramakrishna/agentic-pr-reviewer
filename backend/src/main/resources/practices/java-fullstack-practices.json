@@ -680,6 +680,16 @@
               "code": "if (a) {\n    if (b) {\n        if (c) {\n            if (d) {\n                // ...\n            }\n        }\n    }\n}",
               "solution": "if (!a) return;\nif (!b) return;\nif (!c) return;\nif (!d) return;\n// main logic, un-nested",
               "detectionPattern": "NO_CLEAN_REGEX: if/switch nesting depth greater than 3-4 levels"
+            },
+            {
+              "id": "JAVA-STYLE-007",
+              "title": "Overly generic names (Manager, Handler, Processor, Util, data, info)",
+              "severity": "MEDIUM",
+              "description": "A name like DataManager or process(Object data) reveals nothing about what the class or method actually does, forcing every reader to open the implementation just to find out.",
+              "risk": "Two unrelated pieces of logic both end up in a class called Utils or Manager because the vague name doesn't rule anything out, and the class slowly accumulates unrelated responsibilities.",
+              "code": "public class DataManager {\n    public void process(Object data) { }\n}",
+              "solution": "public class OrderProcessor {\n    public void submitOrder(Order order) { }\n}",
+              "detectionPattern": "class\\s+\\w*(Manager|Handler|Processor|Data|Info)\\b"
             }
           ]
         },
@@ -902,6 +912,390 @@
               "code": "if (obj.getClass() == MyClass.class) { }",
               "solution": "if (obj instanceof MyClass) { }\n// or, with pattern matching: if (obj instanceof MyClass my) { }",
               "detectionPattern": "\\.getClass\\(\\)\\s*==\\s*\\w+\\.class"
+            }
+          ]
+        },
+        {
+          "name": "SOLID Principles",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-OCP-001",
+              "title": "Violating the Open/Closed Principle",
+              "severity": "HIGH",
+              "description": "A class should be open for extension but closed for modification. An if/else chain keyed on a type code forces every new case to edit already-tested code instead of adding new code alongside it.",
+              "risk": "Adding a new customer tier requires editing and re-testing the same method that handles every other tier, so a mistake in the new branch risks breaking the tiers that already worked.",
+              "code": "public double calculateDiscount(String customerType) {\n    if (customerType.equals(\"REGULAR\")) return 0.05;\n    if (customerType.equals(\"PREMIUM\")) return 0.10;\n    if (customerType.equals(\"VIP\")) return 0.20;  // keep adding ifs forever\n    return 0;\n}",
+              "solution": "public interface DiscountPolicy {\n    double calculate(Order order);\n}\n// New tiers are new classes (RegularDiscount, PremiumDiscount, VipDiscount),\n// not new branches in existing code.",
+              "detectionPattern": "NO_CLEAN_REGEX: if/else-if chain on a type-code string/enum that grows with each new business case"
+            },
+            {
+              "id": "JAVA-LSP-001",
+              "title": "Violating the Liskov Substitution Principle",
+              "severity": "HIGH",
+              "description": "A subclass must be usable anywhere its parent type is expected. A subclass that throws on a method the parent promises to support breaks every caller that trusted the parent's contract.",
+              "risk": "Generic code that calls bird.fly() on any Bird works for every subtype in testing until a Penguin is added to the list, at which point it throws UnsupportedOperationException in production.",
+              "code": "class Bird {\n    public void fly() { }\n}\nclass Penguin extends Bird {\n    @Override\n    public void fly() {\n        throw new UnsupportedOperationException(\"Penguins can't fly\");\n    }\n}",
+              "solution": "class Bird { }\ninterface Flyable { void fly(); }\nclass Sparrow extends Bird implements Flyable { public void fly() { } }\nclass Penguin extends Bird { } // no fly() to break",
+              "detectionPattern": "@Override[\\s\\S]{0,80}throw\\s+new\\s+UnsupportedOperationException"
+            },
+            {
+              "id": "JAVA-ISP-001",
+              "title": "Violating the Interface Segregation Principle (fat interfaces)",
+              "severity": "MEDIUM",
+              "description": "A large interface forces every implementer to provide (or stub out) methods it doesn't actually need, whether it's a legitimately fat interface or a 'god interface' spanning unrelated responsibilities.",
+              "risk": "A new implementer has to write empty or throwing stub methods for functionality it doesn't support, and callers can't tell from the type alone which methods are actually safe to call.",
+              "code": "public interface Worker {\n    void work();\n    void eat();\n    void sleep();\n    void attendMeeting();\n}\n// A RobotWorker has to stub out eat() and sleep() with no-ops",
+              "solution": "public interface Workable { void work(); }\npublic interface Eatable { void eat(); }\npublic interface Sleepable { void sleep(); }\n// Implement only the interfaces that apply",
+              "detectionPattern": "NO_CLEAN_REGEX: interface with many unrelated methods, or an implementer with empty/throwing stub method bodies"
+            }
+          ]
+        },
+        {
+          "name": "Domain Modeling",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-DOMAIN-001",
+              "title": "Anemic domain model",
+              "severity": "MEDIUM",
+              "description": "A domain class that's only a bag of getters/setters, with all business rules living in external service classes, throws away the main benefit of OOP: keeping data and the rules that govern it together.",
+              "risk": "Business rules for the same concept (e.g. 'when can an order total change') end up scattered across every service that happens to touch the object, instead of enforced in one place.",
+              "code": "public class Order {\n    private List<Item> items;\n    private BigDecimal total;\n    // only getters and setters — no behavior\n}",
+              "solution": "public class Order {\n    private final List<Item> items = new ArrayList<>();\n\n    public void addItem(Item item) {\n        // business rules enforced here, not scattered across callers\n        items.add(item);\n    }\n\n    public BigDecimal calculateTotal() { }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: domain class with only getters/setters and no methods expressing a business rule"
+            },
+            {
+              "id": "JAVA-DOMAIN-002",
+              "title": "Primitive Obsession",
+              "severity": "MEDIUM",
+              "description": "Using bare primitives (String, BigDecimal) for values that carry their own validation rules and meaning (an email, a phone number, money) scatters that validation across every call site instead of enforcing it once.",
+              "risk": "One call site validates the email format and another forgets to, and there's no type-level way to tell which strings have actually been validated as emails at all.",
+              "code": "public void createUser(String email, String phone, BigDecimal salary) { }",
+              "solution": "public void createUser(Email email, PhoneNumber phone, Money salary) { }\n\npublic record Email(String value) {\n    public Email {\n        if (!value.contains(\"@\")) throw new IllegalArgumentException(\"Invalid email\");\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: multiple primitive parameters that share validation rules or always travel together"
+            }
+          ]
+        },
+        {
+          "name": "Code Smells",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-SMELL-001",
+              "title": "Feature Envy",
+              "severity": "MEDIUM",
+              "description": "A method that calls more getters on another class than it uses fields of its own class is doing that other class's job — the logic belongs where the data lives.",
+              "risk": "The calculation logic and the data it operates on drift apart in different classes, so a change to one often requires hunting down the other, unrelated-looking class that actually does the work.",
+              "code": "public class OrderService {\n    public double calculateTotal(Order order) {\n        double total = 0;\n        for (Item item : order.getItems()) {\n            total += item.getPrice() * item.getQuantity();\n        }\n        return total;\n    }\n}",
+              "solution": "public class Order {\n    public BigDecimal calculateTotal() {\n        return items.stream().map(Item::subtotal).reduce(BigDecimal.ZERO, BigDecimal::add);\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: method that calls significantly more getters on a parameter's type than on its own fields"
+            },
+            {
+              "id": "JAVA-SMELL-002",
+              "title": "Tell, Don't Ask",
+              "severity": "LOW",
+              "description": "Pulling data out of an object with getters and then deciding what to do with it outside the object duplicates logic that belongs inside the object, next to the data it depends on.",
+              "risk": "The eligibility rule gets reimplemented slightly differently at each of the several call sites that ask the same question, and they drift out of sync over time.",
+              "code": "if (user.getAge() >= 18 && user.getStatus().equals(\"ACTIVE\")) {\n    user.setCanBuyAlcohol(true);\n}",
+              "solution": "user.allowAlcoholPurchaseIfEligible();  // the object decides, using its own data",
+              "detectionPattern": "NO_CLEAN_REGEX: a chain of getter calls feeding a conditional that then calls a setter on the same object"
+            },
+            {
+              "id": "JAVA-SMELL-003",
+              "title": "Long Parameter Lists",
+              "severity": "MEDIUM",
+              "description": "A method with many parameters is easy to call with arguments in the wrong order (especially same-typed ones) and hard to read at the call site without checking the signature.",
+              "risk": "Two adjacent String parameters (city, then zip) get swapped at a call site; it compiles fine and silently stores the zip code as the city.",
+              "code": "public void createOrder(String customerId, String productId, int quantity,\n                        BigDecimal price, String currency, String address,\n                        String city, String zip, boolean express) { }",
+              "solution": "public record CreateOrderCommand(\n    CustomerId customerId, ProductId productId, int quantity,\n    Money price, Address shippingAddress, boolean express) {}\n\npublic void createOrder(CreateOrderCommand command) { }",
+              "detectionPattern": "NO_CLEAN_REGEX: method signature with more than 4-5 parameters"
+            },
+            {
+              "id": "JAVA-SMELL-004",
+              "title": "Data Clumps",
+              "severity": "MEDIUM",
+              "description": "The same group of parameters (street/city/zip/country) shows up together across multiple method signatures without ever being given a name of its own as a type.",
+              "risk": "Adding a new field to the group (e.g. a 'unit number' to an address) means hunting down and updating every method signature that repeats the clump, instead of changing one type.",
+              "code": "public void deliver(String street, String city, String zip, String country) { }\npublic void invoice(String street, String city, String zip, String country) { }",
+              "solution": "public record Address(String street, String city, String zip, String country) {}\n\npublic void deliver(Address address) { }\npublic void invoice(Address address) { }",
+              "detectionPattern": "NO_CLEAN_REGEX: the same group of 3+ parameters repeated across multiple method signatures"
+            },
+            {
+              "id": "JAVA-SMELL-005",
+              "title": "Refused Bequest",
+              "severity": "MEDIUM",
+              "description": "A subclass inherits methods it doesn't want or can't meaningfully support — a sign the inheritance relationship doesn't actually model a true is-a relationship.",
+              "risk": "A caller iterating over a list of the parent type calls an inherited method that this particular subclass doesn't support, and gets a wrong result or exception purely because of a poorly-fitted hierarchy.",
+              "code": "class Dog extends Animal {\n    // inherits fly(), swim(), layEggs() that make no sense for a Dog\n}",
+              "solution": "// Use composition, or a narrower base type/interface that only includes\n// behavior every subtype genuinely supports.",
+              "detectionPattern": "NO_CLEAN_REGEX: subclass that overrides an inherited method with an empty body or an UnsupportedOperationException"
+            },
+            {
+              "id": "JAVA-SMELL-006",
+              "title": "Shotgun Surgery",
+              "severity": "HIGH",
+              "description": "A single logical change (e.g. how tax is calculated) requires touching many small, unrelated-looking places across the codebase instead of one.",
+              "risk": "It's easy to update 4 of the 5 places that needed the change and ship a bug from the one spot that got missed, with no compiler error to catch the omission.",
+              "code": "// Changing tax calculation requires edits in OrderService, InvoiceService,\n// ReportService, EmailService, and 3 other unrelated-looking classes.",
+              "solution": "// Centralize the knowledge in one place (e.g. a TaxCalculator or domain\n// policy object) that every caller delegates to.",
+              "detectionPattern": "NO_CLEAN_REGEX: one logical change historically required edits across many unrelated files"
+            },
+            {
+              "id": "JAVA-SMELL-007",
+              "title": "Divergent Change",
+              "severity": "HIGH",
+              "description": "The opposite of Shotgun Surgery: one class keeps changing for many unrelated reasons (pricing rules today, shipping rules tomorrow, notification rules next week) because it's absorbed too many responsibilities.",
+              "risk": "Every unrelated feature request touches the same class, so its git blame and review history become a tangle of unrelated changes, and any one change risks breaking the others.",
+              "code": "public class Order {\n    // changed for pricing rules\n    // changed for shipping rules\n    // changed for tax rules\n    // changed for notification rules\n}",
+              "solution": "// Split responsibilities into separate classes, one reason to change each\n// (this is the Single Responsibility Principle from the other direction).",
+              "detectionPattern": "NO_CLEAN_REGEX: a class whose commit history shows changes for many unrelated reasons"
+            },
+            {
+              "id": "JAVA-SMELL-008",
+              "title": "Speculative Generality",
+              "severity": "MEDIUM",
+              "description": "Building an abstraction, interface, or configuration hook for flexibility nobody has actually asked for yet adds real complexity in exchange for imagined future benefit.",
+              "risk": "The one-implementation interface, the unused type parameter, and the pluggable strategy nobody plugs a second strategy into all cost every future reader time understanding indirection that never pays off.",
+              "code": "public interface AbstractDataProviderFactoryBuilder { }  // exactly one implementation, ever",
+              "solution": "// Keep it concrete. Introduce the abstraction when a second real need for\n// it actually shows up (the \"Rule of Three\").",
+              "detectionPattern": "NO_CLEAN_REGEX: interface or abstract class with exactly one implementation and no near-term second one planned"
+            },
+            {
+              "id": "JAVA-SMELL-009",
+              "title": "Message Chains (Law of Demeter violations)",
+              "severity": "MEDIUM",
+              "description": "A long chain of getter calls (a.getB().getC().getD()) exposes and depends on the entire internal structure of every object in the chain, not just the one you're actually talking to.",
+              "risk": "Any of the intermediate objects changing its internal structure (e.g. Customer stops holding an Address directly) breaks every distant caller that chained through it, even ones that only wanted the city name.",
+              "code": "order.getCustomer().getAddress().getCity().getName();",
+              "solution": "order.getCustomerCityName();  // order (or customer) does the navigation internally",
+              "detectionPattern": "(\\.\\w+\\(\\)){3,}"
+            },
+            {
+              "id": "JAVA-SMELL-010",
+              "title": "Middle Man",
+              "severity": "LOW",
+              "description": "A class whose methods mostly just forward the call to another object adds an indirection layer without adding any real behavior.",
+              "risk": "Readers have to jump through an extra class that does nothing but call another method, adding navigation overhead with no corresponding benefit.",
+              "code": "public class OrderService {\n    private final OrderRepository repo;\n    public Order find(Long id) {\n        return repo.findById(id);  // pure delegation, adds nothing\n    }\n}",
+              "solution": "// Either add real logic in the middle class, or let the caller use the\n// delegate directly when the wrapper adds no value.",
+              "detectionPattern": "NO_CLEAN_REGEX: method body that is only `return delegate.sameMethodName(sameArgs);`"
+            },
+            {
+              "id": "JAVA-SMELL-011",
+              "title": "Lazy Class",
+              "severity": "LOW",
+              "description": "A class that does too little to justify its own existence (a handful of trivial getters/setters and nothing else) adds a file, a name, and a mental hop for no real benefit.",
+              "risk": "Nothing breaks, but every reader has to open one more file and follow one more indirection to reach behavior that could have lived directly on the class that actually needed it.",
+              "code": "public class UserHolder {\n    private User user;\n    public User getUser() { return user; }\n    public void setUser(User user) { this.user = user; }\n}",
+              "solution": "// Eliminate the wrapper. Use the User object directly.",
+              "detectionPattern": "NO_CLEAN_REGEX: class consisting only of a single field with a getter and setter"
+            },
+            {
+              "id": "JAVA-SMELL-012",
+              "title": "Alternative Classes with Different Interfaces",
+              "severity": "MEDIUM",
+              "description": "Two classes that do essentially the same job but expose different method names/signatures can't be swapped for each other or handled polymorphically, even though conceptually they should be interchangeable.",
+              "risk": "Code that needs to work with either logger has to special-case each one by name instead of depending on one shared abstraction, and adding a third logger means another special case.",
+              "code": "class FileLogger { void logMessage(String msg) { } }\nclass DbLogger   { void writeLog(String text) { } }",
+              "solution": "public interface Logger {\n    void log(String message);\n}\n// Both FileLogger and DbLogger implement the same interface",
+              "detectionPattern": "NO_CLEAN_REGEX: two classes with overlapping responsibility but different method names for the same operation"
+            },
+            {
+              "id": "JAVA-SMELL-013",
+              "title": "Incomplete Library Class (working around missing functionality)",
+              "severity": "LOW",
+              "description": "A utility class full of static methods that exists purely to compensate for a third-party/JDK class's missing functionality is a sign the underlying type should be wrapped or replaced instead.",
+              "risk": "The workarounds accumulate as more gaps are found, and the resulting utility class becomes its own maintenance burden that a proper wrapper or a modern replacement API would have avoided.",
+              "code": "// Utility class full of static methods operating on a third-party class's gaps\npublic class DateUtils {\n    public static boolean isWeekend(Date d) { }\n}",
+              "solution": "// Prefer a proper wrapper class, or a modern replacement API (e.g. java.time\n// instead of patching around java.util.Date's gaps).",
+              "detectionPattern": "NO_CLEAN_REGEX: a *Utils class whose methods only exist to work around a specific library class's limitations"
+            },
+            {
+              "id": "JAVA-SMELL-014",
+              "title": "Temporary Field",
+              "severity": "MEDIUM",
+              "description": "A field that's only meaningful during certain operations (and null/unused the rest of the time) makes the object's valid states hard to reason about — every reader has to know which operations populate it.",
+              "risk": "Code elsewhere in the class accesses the field assuming it's always populated, and gets a null the moment it's called outside the one narrow flow that actually sets it.",
+              "code": "public class Order {\n    private Customer customer;\n    private Discount specialDiscount;  // only ever set during black-friday processing\n}",
+              "solution": "// Move the temporary data into the method that needs it, or a dedicated\n// context/parameter object scoped to that specific operation.",
+              "detectionPattern": "NO_CLEAN_REGEX: a field that's null/unset outside one specific narrow code path"
+            },
+            {
+              "id": "JAVA-SMELL-015",
+              "title": "Comments that explain bad code instead of fixing it",
+              "severity": "MEDIUM",
+              "description": "A comment describing what an unclear expression does is a workaround for the expression's unclarity, not a fix for it. Naming things well removes the need for the comment entirely.",
+              "risk": "The comment and the code drift apart over time (the comment isn't touched when the logic changes), so eventually the comment actively misleads the next reader instead of helping them.",
+              "code": "// check if user is eligible\nif (u.a > 18 && u.s.equals(\"A\") && u.c != null && u.c.t > 3) {\n}",
+              "solution": "if (user.isEligibleForPromotion()) {\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: a comment immediately preceding a complex boolean expression with cryptic variable names"
+            },
+            {
+              "id": "JAVA-SMELL-016",
+              "title": "Duplicate Code",
+              "severity": "HIGH",
+              "description": "The same logic copy-pasted in multiple places means every future bug fix or rule change has to be found and applied identically in every copy — and one is inevitably missed.",
+              "risk": "A validation bug gets fixed in two of the three places it was copy-pasted; the third keeps accepting invalid data, and nobody notices until it causes a production incident.",
+              "code": "// The same validation logic copied, with minor tweaks, into three different services",
+              "solution": "// Extract the shared logic into one method, domain object, or validator\n// class that all three services call.",
+              "detectionPattern": "NO_CLEAN_REGEX: near-identical code blocks (differing only in minor details) appearing in multiple places"
+            },
+            {
+              "id": "JAVA-SMELL-017",
+              "title": "Dead Code",
+              "severity": "LOW",
+              "description": "Unused methods, variables, and unreachable branches clutter the codebase and cost every future reader time figuring out whether the dead code actually matters (it doesn't).",
+              "risk": "A reader assumes an unused-looking method must be called from somewhere non-obvious (reflection, a framework) and spends time tracing it, when it's simply never called at all.",
+              "code": "private void oldCalculateTotal() { }  // never called\nif (false) {\n    // unreachable\n}",
+              "solution": "// Delete unused code outright. Version control preserves history if it's\n// ever needed again — there's no reason to keep it commented out or dead.",
+              "detectionPattern": "if\\s*\\(\\s*false\\s*\\)"
+            },
+            {
+              "id": "JAVA-SMELL-018",
+              "title": "Outdated comments that no longer match the code",
+              "severity": "MEDIUM",
+              "description": "A comment describing behavior the code no longer has is worse than no comment at all — it actively misleads instead of just being silent.",
+              "risk": "A reader trusts the comment ('returns null if not found') over the actual code ('returns Optional.empty()'), and writes a null check that never fires against code that never returns null.",
+              "code": "// Returns the user if found, otherwise null\npublic Optional<User> findUser(Long id) { }",
+              "solution": "// Keep comments in sync with the code they describe, or delete them and\n// let self-documenting names/types carry the meaning instead.",
+              "detectionPattern": "NO_CLEAN_REGEX: a comment describing behavior (e.g. \"returns null\") that contradicts the actual method signature/body"
+            }
+          ]
+        },
+        {
+          "name": "Coupling & Cohesion",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-COUPLE-001",
+              "title": "Overusing utility/helper classes full of static methods",
+              "severity": "MEDIUM",
+              "description": "Moving all behavior for a domain concept into a separate *Utils class (rather than onto the domain object itself) turns object-oriented code procedural and makes the behavior harder to override, mock, or extend.",
+              "risk": "Testing OrderUtils.applyDiscount() requires reconstructing every input by hand since there's no object to stub; a subclass or alternate implementation of the behavior isn't possible at all.",
+              "code": "public class OrderUtils {\n    public static BigDecimal calculateTotal(Order order) { }\n    public static void applyDiscount(Order order) { }\n}",
+              "solution": "// Move the behavior onto the domain object or a dedicated domain service.\norder.calculateTotal();\norder.applyDiscount(policy);",
+              "detectionPattern": "class\\s+\\w*Utils\\s*\\{[\\s\\S]*public\\s+static"
+            },
+            {
+              "id": "JAVA-COUPLE-002",
+              "title": "Creating unnecessary layers of abstraction",
+              "severity": "MEDIUM",
+              "description": "Wrapping an implementation in a facade, then a delegate, then an interface with only one implementer, adds indirection a reader has to trace through without any corresponding flexibility benefit.",
+              "risk": "Understanding one piece of business logic requires jumping through three or four classes that each just forward the call, with the actual logic buried at the bottom of the stack.",
+              "code": "interface IOrderService { }\nclass OrderServiceImpl implements IOrderService { }\nclass OrderServiceFacade { OrderServiceImpl impl; }\nclass OrderServiceDelegate { }",
+              "solution": "// Introduce an abstraction only when it solves a real, present problem\n// (multiple real implementations, or a genuine testing seam).",
+              "detectionPattern": "NO_CLEAN_REGEX: a chain of Facade/Delegate/Impl wrapper classes around a single implementation"
+            },
+            {
+              "id": "JAVA-COUPLE-003",
+              "title": "Mixing business logic with infrastructure concerns",
+              "severity": "HIGH",
+              "description": "A domain class that opens its own JDBC connection, executes SQL, or sends email directly is now coupled to infrastructure details that have nothing to do with the business rule it's supposed to express.",
+              "risk": "Testing the business rule requires a real database connection; swapping the persistence technology later means touching domain classes instead of just the persistence layer.",
+              "code": "public class Order {\n    public void save() {\n        // open JDBC connection, execute SQL, commit...\n    }\n}",
+              "solution": "// Keep the domain object pure. Persistence is handled by a repository.\norderRepository.save(order);",
+              "detectionPattern": "NO_CLEAN_REGEX: a domain class containing JDBC/JPA/network calls mixed with business rules"
+            },
+            {
+              "id": "JAVA-COUPLE-004",
+              "title": "Constructor doing real work (I/O, threads, heavy computation)",
+              "severity": "HIGH",
+              "description": "A constructor that opens a connection, loads a cache from a database, or starts a background thread makes the object expensive and side-effecting just to create — including in a unit test that only needs a lightweight instance.",
+              "risk": "A unit test that only needs to check one method's logic ends up needing a real database connection or a running background thread just to construct the object under test at all.",
+              "code": "public OrderService() {\n    this.connection = DriverManager.getConnection(url);\n    this.cache = loadCacheFromDb();\n    startBackgroundThread();\n}",
+              "solution": "public OrderService(OrderRepository repo, Cache cache) {\n    this.repo = repo;\n    this.cache = cache;\n}\n// Heavy initialization happens outside the constructor, or lazily.",
+              "detectionPattern": "NO_CLEAN_REGEX: constructor body containing I/O, network calls, or Thread.start()"
+            },
+            {
+              "id": "JAVA-COUPLE-005",
+              "title": "Making every class final by default — or never making any class final",
+              "severity": "LOW",
+              "description": "Neither extreme reflects a real design decision: blanket final closes off extension even where it would genuinely help, while never using final leaves every class open to inheritance nobody actually intended to support.",
+              "risk": "A class left non-final 'by default' gets extended by someone in a way the original author never designed for or tested, since nothing signaled that inheritance wasn't intended.",
+              "code": "// No stated policy: some classes final for no reason, others open\n// for inheritance with no thought given to whether that's safe.",
+              "solution": "// Make a class final when it isn't designed for inheritance (the common\n// case). Leave it open only when extension is a deliberate, documented\n// part of the design (see docs/adr and JAVA-DESIGN-007).",
+              "detectionPattern": "NO_CLEAN_REGEX: no consistent project policy on when classes are declared final"
+            },
+            {
+              "id": "JAVA-COUPLE-006",
+              "title": "Using inheritance just to access protected members",
+              "severity": "MEDIUM",
+              "description": "Extending a class purely to reach its protected fields/methods creates an artificial is-a relationship that only exists to get around encapsulation, rather than because the subclass genuinely specializes the parent.",
+              "risk": "The subclass is now coupled to the parent's internal representation (a protected Connection field, say) and breaks if the parent ever changes that internal detail, even though the subclass was never really 'a kind of' the parent.",
+              "code": "class Base {\n    protected Connection conn;\n}\nclass Service extends Base {\n    public void doWork() {\n        conn.execute(sql);\n    }\n}",
+              "solution": "class Service {\n    private final Connection conn;\n    public Service(Connection conn) { this.conn = conn; }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: a subclass whose only use of inheritance is reading a protected field from the parent"
+            },
+            {
+              "id": "JAVA-COUPLE-007",
+              "title": "Side effects inside equals(), hashCode(), compareTo(), or toString()",
+              "severity": "HIGH",
+              "description": "These methods are expected to be pure, fast, and callable at any time without consequence — collections, logging frameworks, and debuggers all call them freely, sometimes unexpectedly.",
+              "risk": "A debugger or logging framework calling toString() to display a value in an IDE watch window unexpectedly triggers a real side effect (a counter increment, a log line) that changes program behavior just from being observed.",
+              "code": "@Override\npublic boolean equals(Object o) {\n    log.info(\"Comparing...\");\n    counter++;  // side effect inside equals()\n    return true;\n}",
+              "solution": "// Keep equals/hashCode/compareTo/toString pure: no logging, no mutation,\n// no I/O. They should only read state and compute a result.",
+              "detectionPattern": "NO_CLEAN_REGEX: equals/hashCode/compareTo/toString method body containing a logging call or a field mutation"
+            },
+            {
+              "id": "JAVA-COUPLE-008",
+              "title": "Overusing the Singleton pattern (getInstance())",
+              "severity": "MEDIUM",
+              "description": "A hand-rolled Singleton is global mutable access by another name: it's hard to substitute a test double for, and every user of it is implicitly coupled to there being exactly one instance forever.",
+              "risk": "A unit test that needs a fresh, isolated instance of the singleton for each test case can't get one, so tests leak state into each other through the shared static instance.",
+              "code": "public class Database {\n    private static final Database INSTANCE = new Database();\n    public static Database getInstance() { return INSTANCE; }\n    private Database() {}\n}",
+              "solution": "// Prefer dependency injection and let the container manage the single\n// instance's lifecycle, rather than hand-rolling it.\n@Component\npublic class Database { }",
+              "detectionPattern": "private\\s+static\\s+final\\s+\\w+\\s+INSTANCE\\s*=|public\\s+static\\s+\\w+\\s+getInstance\\s*\\("
+            },
+            {
+              "id": "JAVA-COUPLE-009",
+              "title": "Violating Command-Query Separation",
+              "severity": "MEDIUM",
+              "description": "A method that both changes state and returns a value describing that state is doing two things at once, which makes its name alone an unreliable guide to whether it's safe to call without using the result.",
+              "risk": "A caller that only wants to know isLargeOrder() but calls a method that also silently adds an item as a side effect of asking gets an unwanted mutation just from checking a condition.",
+              "code": "public boolean addItem(Item item) {\n    items.add(item);\n    return items.size() > 10;  // mutates AND queries\n}",
+              "solution": "public void addItem(Item item) {\n    items.add(item);\n}\npublic boolean isLargeOrder() {\n    return items.size() > 10;\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: a non-void method whose body also mutates the object's own state"
+            },
+            {
+              "id": "JAVA-COUPLE-010",
+              "title": "High afferent/efferent coupling",
+              "severity": "HIGH",
+              "description": "A class that depends on many other classes (high efferent coupling) or that many other classes depend on (high afferent coupling) becomes rigid — hard to change without a ripple effect in one direction or the other.",
+              "risk": "A service constructor with 15 injected dependencies means almost any change anywhere in the fifteen collaborators is a candidate for breaking this one class, and this one class is nearly impossible to test without mocking all fifteen.",
+              "code": "// A service directly depending on 15 different repositories, clients, and utils",
+              "solution": "// Apply a Facade or Mediator to group related dependencies, or split the\n// class's responsibilities so each piece needs fewer collaborators.",
+              "detectionPattern": "NO_CLEAN_REGEX: a class/constructor with an unusually large number of injected dependencies (10+)"
+            },
+            {
+              "id": "JAVA-COUPLE-011",
+              "title": "Poltergeist classes (short-lived, unnecessary intermediary objects)",
+              "severity": "LOW",
+              "description": "A class whose entire job is to construct one other object and immediately call it adds a name and a file without adding any real behavior of its own.",
+              "risk": "A reader tracing a call has to open one more class file that turns out to contain nothing but a single delegating call, adding navigation cost with zero corresponding insight.",
+              "code": "public class OrderInitiator {\n    public void start(Order order) {\n        new OrderProcessor().process(order);\n    }\n}",
+              "solution": "// Call OrderProcessor directly if the intermediary adds no real value.",
+              "detectionPattern": "NO_CLEAN_REGEX: a class whose only method constructs and immediately delegates to exactly one other object"
+            },
+            {
+              "id": "JAVA-COUPLE-012",
+              "title": "Using inheritance where a strategy or parameter would suffice",
+              "severity": "MEDIUM",
+              "description": "Creating a subclass for every variant of a single behavior (one class per output format, say) produces a subclass explosion where a single class with an injected/parameterized strategy would do the same job with far less code.",
+              "risk": "Adding a new output format means adding a whole new class instead of a new implementation of one small interface, and the growing subclass list makes it easy to lose track of which one is actually used where.",
+              "code": "class ReportGenerator { }\nclass PdfReportGenerator extends ReportGenerator { }\nclass CsvReportGenerator extends ReportGenerator { }\nclass ExcelReportGenerator extends ReportGenerator { }",
+              "solution": "public class ReportGenerator {\n    public void generate(ReportData data, ReportFormat format) { }\n}\n// or inject a Strategy implementation at runtime instead of subclassing",
+              "detectionPattern": "NO_CLEAN_REGEX: multiple sibling subclasses that differ only in one parameterizable behavior"
+            },
+            {
+              "id": "JAVA-COUPLE-013",
+              "title": "Mixing levels of abstraction inside a single method",
+              "severity": "MEDIUM",
+              "description": "A method that jumps between high-level business language and low-level technical details (JDBC calls next to business rules) forces the reader to constantly switch mental context to follow it.",
+              "risk": "A reader trying to understand the business flow has to wade through PreparedStatement setup and SQL strings to find the two lines that actually express the business rule.",
+              "code": "public void processOrder(Order order) {\n    Connection conn = dataSource.getConnection();\n    PreparedStatement ps = conn.prepareStatement(\"INSERT ...\");\n    // low-level JDBC mixed directly with business logic\n    emailClient.send(order.getCustomerEmail(), \"Order confirmed\");\n}",
+              "solution": "public void processOrder(Order order) {\n    save(order);\n    notifyCustomer(order);\n}\n// each helper method stays at one consistent level of abstraction",
+              "detectionPattern": "NO_CLEAN_REGEX: a method body alternating between business-level calls and low-level technical operations (SQL, sockets, raw I/O)"
             }
           ]
         }
