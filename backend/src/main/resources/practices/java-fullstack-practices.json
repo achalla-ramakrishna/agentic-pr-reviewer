@@ -36,6 +36,26 @@
               "code": "catch (SQLException e) {\n    throw new RuntimeException(\"DB error\");\n}",
               "solution": "catch (SQLException e) {\n    throw new RuntimeException(\"DB error\", e);\n}",
               "detectionPattern": "throw\\s+new\\s+\\w+Exception\\(\"[^\"]*\"\\)\\s*;"
+            },
+            {
+              "id": "JAVA-EXC-004",
+              "title": "Throwing a generic RuntimeException with a vague message",
+              "severity": "MEDIUM",
+              "description": "A bare RuntimeException(\"Error\") tells the caller and the operator nothing about what went wrong or how to react to it.",
+              "risk": "An on-call engineer paged at 3am sees only 'Error' in the stack trace and has to read the surrounding code to find out what actually failed.",
+              "code": "if (user == null) {\n    throw new RuntimeException(\"Error\");\n}",
+              "solution": "if (user == null) {\n    throw new UserNotFoundException(\"User not found with id: \" + userId);\n}",
+              "detectionPattern": "throw\\s+new\\s+(RuntimeException|Exception)\\(\"(Error|Failed|Something went wrong)\"\\)"
+            },
+            {
+              "id": "JAVA-EXC-005",
+              "title": "Catching NullPointerException or ClassCastException as control flow",
+              "severity": "HIGH",
+              "description": "NullPointerException and ClassCastException almost always indicate a programming bug, not an expected condition to branch on.",
+              "risk": "The actual bug (why the reference was null) is hidden behind a catch block that treats the crash as normal, so it never gets fixed and can resurface with worse consequences elsewhere.",
+              "code": "try {\n    return user.getAddress().getCity();\n} catch (NullPointerException e) {\n    return \"Unknown\";\n}",
+              "solution": "if (user != null && user.getAddress() != null) {\n    return user.getAddress().getCity();\n}\nreturn \"Unknown\";",
+              "detectionPattern": "catch\\s*\\(\\s*(NullPointerException|ClassCastException)\\s+\\w+\\s*\\)"
             }
           ]
         },
@@ -170,6 +190,26 @@
               "code": "lock.lock();\nprocessOrder(order);\nlock.unlock();",
               "solution": "lock.lock();\ntry {\n    processOrder(order);\n} finally {\n    lock.unlock();\n}",
               "detectionPattern": "\\.lock\\(\\)\\s*;(?!\\s*try)"
+            },
+            {
+              "id": "JAVA-CONC-004",
+              "title": "Calling run() instead of start() on a Thread",
+              "severity": "HIGH",
+              "description": "run() executes the Runnable's code on the current thread, synchronously. It does not create or start a new thread — only start() does that.",
+              "risk": "Code that looks concurrent (spawns a Thread, calls a method on it) actually runs entirely sequentially on the calling thread; any expected parallelism silently never happens.",
+              "code": "Thread t = new Thread(() -> doWork());\nt.run();  // runs in the calling thread!",
+              "solution": "Thread t = new Thread(() -> doWork());\nt.start();  // actually starts a new thread\n// or prefer ExecutorService / virtual threads over raw Thread",
+              "detectionPattern": "new\\s+Thread\\([^)]*\\)[^;]*;\\s*\\w+\\.run\\(\\)"
+            },
+            {
+              "id": "JAVA-CONC-005",
+              "title": "Relying on Thread.stop(), Thread.suspend(), or Thread.resume()",
+              "severity": "CRITICAL",
+              "description": "These methods are deprecated because they're inherently unsafe: stop() can release locks mid-update and leave shared objects in a corrupted, half-modified state.",
+              "risk": "A thread killed via stop() mid-write can leave a shared data structure permanently corrupted, with no exception raised to indicate anything went wrong.",
+              "code": "thread.stop();\nthread.suspend();",
+              "solution": "thread.interrupt();\n// or a higher-level construct: ExecutorService.shutdownNow(), Future.cancel()",
+              "detectionPattern": "\\.(stop|suspend|resume)\\(\\)\\s*;"
             }
           ]
         },
@@ -410,6 +450,56 @@
               "code": "public abstract class Validator {\n    public abstract boolean isValid(Order order);\n}",
               "solution": "public interface Validator {\n    boolean isValid(Order order);\n}",
               "detectionPattern": "NO_CLEAN_REGEX: abstract class with only abstract methods and no shared state/implementation"
+            },
+            {
+              "id": "JAVA-DESIGN-009",
+              "title": "Using clone() to copy an object",
+              "severity": "LOW",
+              "description": "Object.clone() has a famously broken contract (it doesn't call constructors, interacts badly with final fields, and Cloneable carries no visible clone() method). A copy constructor or static factory is simpler and safer.",
+              "risk": "A subclass added later inherits a clone() that shallow-copies fields it doesn't know about, or throws CloneNotSupportedException in a place nobody expected an exception.",
+              "code": "public Person clone() {\n    try {\n        return (Person) super.clone();\n    } catch (CloneNotSupportedException e) {\n        throw new RuntimeException(e);\n    }\n}",
+              "solution": "public Person(Person other) {\n    this.name = other.name;\n    this.age = other.age;\n}\n// or a static factory / builder / record",
+              "detectionPattern": "@Override\\s*\\n\\s*public\\s+\\w+\\s+clone\\s*\\("
+            },
+            {
+              "id": "JAVA-DESIGN-010",
+              "title": "Using reflection without strong justification",
+              "severity": "MEDIUM",
+              "description": "Reflection bypasses normal access control and type checking, is brittle across refactors (a renamed field breaks it silently until runtime), and is significantly slower than a direct call.",
+              "risk": "A routine rename of a private field compiles cleanly everywhere except the reflective access, which now throws NoSuchFieldException only when that code path actually runs.",
+              "code": "Field field = obj.getClass().getDeclaredField(\"name\");\nfield.setAccessible(true);\nfield.set(obj, \"new value\");",
+              "solution": "// Prefer a normal setter, an interface method, or a redesign that doesn't\n// need to reach into another class's private state.\nobj.setName(\"new value\");",
+              "detectionPattern": "\\.getDeclaredField\\(|\\.setAccessible\\(true\\)"
+            },
+            {
+              "id": "JAVA-DESIGN-011",
+              "title": "Calling System.exit() from library or business logic",
+              "severity": "HIGH",
+              "description": "System.exit() terminates the entire JVM immediately — not just the current request or operation. In a server, container, or test runner, that takes down every other in-flight request with it.",
+              "risk": "A single invalid-config check in a rarely-used code path kills the whole running application (or test suite) instead of just failing the one operation that hit it.",
+              "code": "if (configInvalid) {\n    System.exit(1);\n}",
+              "solution": "if (configInvalid) {\n    throw new IllegalStateException(\"Invalid configuration\");\n}",
+              "detectionPattern": "System\\.exit\\("
+            },
+            {
+              "id": "JAVA-DESIGN-012",
+              "title": "Relying on the order of static initialization blocks",
+              "severity": "MEDIUM",
+              "description": "Static field/block initialization order depends on declaration order within the class and load order across classes — easy to get subtly wrong and hard to see just by reading one class.",
+              "risk": "Reordering two unrelated-looking static declarations (or splitting a class into two files) silently changes which value a static field ends up with, with no compiler warning.",
+              "code": "public class Config {\n    static {\n        VALUE = load();  // depends on another static field's init order\n    }\n    private static final int VALUE;\n}",
+              "solution": "// Keep static initialization simple and independent, or use lazy/explicit\n// initialization instead of interdependent static blocks.",
+              "detectionPattern": "NO_CLEAN_REGEX: multiple interdependent static initializer blocks in one class"
+            },
+            {
+              "id": "JAVA-DESIGN-013",
+              "title": "Using assert for runtime validation in production code",
+              "severity": "HIGH",
+              "description": "Java assertions are disabled by default (the JVM needs -ea to enable them), so an assert used for business validation silently does nothing in a standard production deployment.",
+              "risk": "A precondition check written as `assert amount > 0` never actually runs in production, so invalid data sails straight through into logic that assumed it was checked.",
+              "code": "public void withdraw(double amount) {\n    assert amount > 0 : \"Amount must be positive\";\n    // ...\n}",
+              "solution": "public void withdraw(double amount) {\n    if (amount <= 0) {\n        throw new IllegalArgumentException(\"Amount must be positive\");\n    }\n}",
+              "detectionPattern": "\\bassert\\s+\\w+.*:\\s*\"[^\"]*\""
             }
           ]
         },
@@ -442,6 +532,16 @@
               "code": "for (Order order : orders) {\n    if (order.isCancelled()) {\n        orders.remove(order); // ConcurrentModificationException\n    }\n}",
               "solution": "orders.removeIf(Order::isCancelled);",
               "detectionPattern": "for\\s*\\([^)]*:\\s*\\w+\\)\\s*\\{[^}]*\\w+\\.remove\\("
+            },
+            {
+              "id": "JAVA-COLL-003",
+              "title": "Mutating an object after it's used as a Set element or Map key",
+              "severity": "HIGH",
+              "description": "HashSet/HashMap place an element by its hashCode() at insertion time. Changing a field that hashCode() depends on afterward moves the object logically, but not physically — it's now in the wrong bucket.",
+              "risk": "contains()/get() on the exact same object reference returns false/null after the mutation, because the hash-based lookup checks the new (changed) bucket while the entry still lives in the old one.",
+              "code": "Set<Person> set = new HashSet<>();\nPerson p = new Person(\"Alice\");\nset.add(p);\np.setName(\"Bob\");  // hashCode changes — entry is now \"lost\"",
+              "solution": "// Prefer immutable objects (or records) as Set elements / Map keys,\n// so there's no setter that could invalidate the hash after insertion.",
+              "detectionPattern": "NO_CLEAN_REGEX: an object added to a HashSet/HashMap has a setter called on it afterward"
             }
           ]
         },
@@ -560,6 +660,26 @@
               "code": "int total = 0;\n// ...30 lines of unrelated code...\nfor (Order o : orders) {\n    total += o.getAmount();\n}",
               "solution": "// ...30 lines of unrelated code...\nint total = 0;\nfor (Order o : orders) {\n    total += o.getAmount();\n}",
               "detectionPattern": "NO_CLEAN_REGEX: variable declared many lines before its first actual use"
+            },
+            {
+              "id": "JAVA-STYLE-005",
+              "title": "Magic strings / stringly-typed code",
+              "severity": "MEDIUM",
+              "description": "Using raw string literals as pseudo-enums (a status, a role, a mode) means a typo (\"Admin\" vs \"ADMIN\") compiles fine and fails silently at runtime instead of at compile time.",
+              "risk": "A typo'd literal in one of several scattered comparisons silently never matches, and the resulting bug looks like a logic error rather than the actual cause: a string that doesn't quite match.",
+              "code": "if (\"ACTIVE\".equals(user.getStatus())) { }\nmap.put(\"role\", \"ADMIN\");",
+              "solution": "public enum Status { ACTIVE, INACTIVE, PENDING }\npublic enum Role { ADMIN, USER, GUEST }\n\nif (user.getStatus() == Status.ACTIVE) { }",
+              "detectionPattern": "NO_CLEAN_REGEX: the same string literal used repeatedly as a status/type/mode/role discriminator"
+            },
+            {
+              "id": "JAVA-STYLE-006",
+              "title": "Deeply nested if-else / switch statements",
+              "severity": "MEDIUM",
+              "description": "Nesting depth beyond 3-4 levels makes it hard to hold all the active conditions in your head while reading any single branch, and each new case multiplies the number of paths to reason about.",
+              "risk": "A bug fix added to the innermost branch doesn't account for a condition three levels up that the author lost track of while scrolling through the nesting.",
+              "code": "if (a) {\n    if (b) {\n        if (c) {\n            if (d) {\n                // ...\n            }\n        }\n    }\n}",
+              "solution": "if (!a) return;\nif (!b) return;\nif (!c) return;\nif (!d) return;\n// main logic, un-nested",
+              "detectionPattern": "NO_CLEAN_REGEX: if/switch nesting depth greater than 3-4 levels"
             }
           ]
         },
@@ -576,6 +696,212 @@
               "code": "// Utils.java\nclass Helper { }\nclass Formatter { }\npublic class Utils { }",
               "solution": "// Helper.java\nclass Helper { }\n\n// Formatter.java\nclass Formatter { }\n\n// Utils.java\npublic class Utils { }",
               "detectionPattern": "NO_CLEAN_REGEX: more than one top-level class/interface declaration in a single .java file"
+            }
+          ]
+        },
+        {
+          "name": "Numeric Types",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-NUM-001",
+              "title": "Using float/double for money or precise decimal calculations",
+              "severity": "HIGH",
+              "description": "Binary floating-point can't represent most decimal fractions exactly, so arithmetic on float/double accumulates small rounding errors.",
+              "risk": "0.1 + 0.2 evaluates to 0.30000000000000004; in a financial calculation these tiny errors compound across many operations into an amount that's visibly wrong at the cent level.",
+              "code": "double price = 0.1 + 0.2;  // 0.30000000000000004",
+              "solution": "BigDecimal price = new BigDecimal(\"0.1\").add(new BigDecimal(\"0.2\"));\n// use the String constructor, never `new BigDecimal(0.1)` (a double literal)",
+              "detectionPattern": "\\b(float|double)\\s+\\w*(price|amount|total|balance|cost)\\w*\\s*="
+            },
+            {
+              "id": "JAVA-NUM-002",
+              "title": "Relying on implicit narrowing conversions",
+              "severity": "MEDIUM",
+              "description": "Assigning a wider primitive type into a narrower one without an explicit cast silently truncates or overflows the value instead of failing to compile.",
+              "risk": "A value of 130 assigned into a byte silently wraps around to -126 instead of raising any error, and the bug only surfaces much later when the wrong number is used downstream.",
+              "code": "int value = 130;\nbyte b = (byte) value;  // silent overflow, no warning that data was lost",
+              "solution": "int value = 130;\nif (value < Byte.MIN_VALUE || value > Byte.MAX_VALUE) {\n    throw new IllegalArgumentException(\"value out of byte range: \" + value);\n}\nbyte b = (byte) value;",
+              "detectionPattern": "\\bbyte\\s+\\w+\\s*=\\s*\\(byte\\)\\s*\\w+"
+            },
+            {
+              "id": "JAVA-NUM-003",
+              "title": "Preferring wrapper types over primitives in performance-sensitive code",
+              "severity": "MEDIUM",
+              "description": "Boxing/unboxing a wrapper type (Integer, Long) on every loop iteration allocates an object where a primitive needs none, and introduces an unboxing NullPointerException risk that a primitive can't have.",
+              "risk": "A List<Integer> summed via a for-each loop silently throws an NPE the day one element happens to be null, in code that looks identical to summing a primitive array.",
+              "code": "List<Integer> list = getValues();\nint sum = 0;\nfor (Integer i : list) {\n    sum += i;  // unboxing NPE risk if any element is null\n}",
+              "solution": "int sum = list.stream().mapToInt(Integer::intValue).sum();\n// or filter nulls first if they're expected: list.stream().filter(Objects::nonNull)...",
+              "detectionPattern": "for\\s*\\(\\s*Integer\\s+\\w+\\s*:\\s*\\w+\\)"
+            },
+            {
+              "id": "JAVA-NUM-004",
+              "title": "Using Boolean wrapper when a primitive boolean would do",
+              "severity": "MEDIUM",
+              "description": "A Boolean field defaults to null (not false), which throws a NullPointerException the moment it's auto-unboxed into a primitive boolean context.",
+              "risk": "A newly-added Boolean field that's never explicitly initialized is null until set, and the first isActive() call on a fresh object throws an NPE instead of returning false.",
+              "code": "private Boolean active;\n\npublic boolean isActive() {\n    return active;  // NPE if active was never set\n}",
+              "solution": "private boolean active;\n\npublic boolean isActive() {\n    return active;\n}\n// use Boolean only when a real third state (unknown) is meaningful",
+              "detectionPattern": "private\\s+Boolean\\s+\\w+;"
+            }
+          ]
+        },
+        {
+          "name": "Input Validation",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-VALID-001",
+              "title": "Missing input validation on a public method",
+              "severity": "MEDIUM",
+              "description": "A public method that uses its parameters without checking them pushes the burden of correctness onto every caller, forever, instead of failing fast at the boundary.",
+              "risk": "A null or out-of-range value passed in from three call sites away isn't caught here; it propagates further into the system and fails with a confusing error far from where the bad value actually originated.",
+              "code": "public void process(String name, int age) {\n    // uses name and age directly, no checks\n}",
+              "solution": "public void process(String name, int age) {\n    Objects.requireNonNull(name, \"name must not be null\");\n    if (name.isBlank()) throw new IllegalArgumentException(\"name must not be blank\");\n    if (age < 0 || age > 150) throw new IllegalArgumentException(\"invalid age: \" + age);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: public method using its parameters with no null/range/blank checks"
+            }
+          ]
+        },
+        {
+          "name": "Logging",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-LOG-001",
+              "title": "Using System.out.println/e.printStackTrace() instead of a logger",
+              "severity": "MEDIUM",
+              "description": "Console output has no log levels, no structured fields, and can't be routed, filtered, or aggregated the way a real logging framework's output can.",
+              "risk": "In production, this output either goes nowhere useful (no console attached) or floods stdout with no way to filter it by severity when investigating an incident.",
+              "code": "catch (Exception e) {\n    e.printStackTrace();\n}",
+              "solution": "catch (Exception e) {\n    log.error(\"Unexpected error while processing request\", e);\n}",
+              "detectionPattern": "\\.printStackTrace\\(\\)|System\\.out\\.println\\("
+            },
+            {
+              "id": "JAVA-LOG-002",
+              "title": "Logging and rethrowing the same exception",
+              "severity": "MEDIUM",
+              "description": "Logging an exception and then rethrowing it means the same stack trace gets logged again by whatever catches it further up, duplicating noise in the logs for a single failure.",
+              "risk": "An incident investigation finds the same error logged three times at three layers, making it unclear whether this was one failure or three separate ones.",
+              "code": "try {\n    // ...\n} catch (Exception e) {\n    log.error(\"Failed\", e);\n    throw e;\n}",
+              "solution": "try {\n    // ...\n} catch (Exception e) {\n    throw new ServiceException(\"Operation failed\", e);  // wrap; let one layer log it\n}",
+              "detectionPattern": "log\\.(error|warn)\\([^)]*,\\s*\\w+\\)\\s*;\\s*throw\\s+\\w+\\s*;"
+            },
+            {
+              "id": "JAVA-LOG-003",
+              "title": "Incorrect log levels",
+              "severity": "LOW",
+              "description": "Logging routine, expected events at ERROR (or genuine failures at INFO/DEBUG) makes logs either too noisy to scan for real problems or hides the real problems entirely.",
+              "risk": "An on-call engineer's ERROR-level alert channel is full of routine page views, so a real production failure logged at the wrong level goes unnoticed alongside the noise.",
+              "code": "log.error(\"User {} viewed page {}\", userId, page);  // not an error\nlog.info(\"NullPointerException occurred\", e);  // hides a real failure",
+              "solution": "log.debug(\"User {} viewed page {}\", userId, page);\nlog.error(\"Failed to process order\", e);",
+              "detectionPattern": "NO_CLEAN_REGEX: business-as-usual event logged at ERROR, or an exception logged at INFO/DEBUG"
+            }
+          ]
+        },
+        {
+          "name": "Strings",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-STR-001",
+              "title": "Ignoring the result of an immutable String method",
+              "severity": "MEDIUM",
+              "description": "String is immutable — trim(), toUpperCase(), replace(), etc. all return a new String and leave the original unchanged. Calling one without using its return value does nothing.",
+              "risk": "Code that calls name.trim() expecting it to clean up name in place silently has no effect at all; the untrimmed value flows through unchanged.",
+              "code": "String name = \"  Alice  \";\nname.trim();          // return value discarded, does nothing\nname.toUpperCase();   // same",
+              "solution": "String name = \"  Alice  \";\nname = name.trim().toUpperCase();",
+              "detectionPattern": "\\w+\\.(trim|toUpperCase|toLowerCase|replace|strip)\\([^)]*\\)\\s*;"
+            },
+            {
+              "id": "JAVA-STR-002",
+              "title": "Misusing String.intern() on unbounded input",
+              "severity": "MEDIUM",
+              "description": "intern() adds a string to the JVM's string pool, which lives for the life of the application. Interning strings derived from unbounded user input can grow that pool without limit.",
+              "risk": "Interning every distinct value of a high-cardinality user-supplied field (e.g. a search query) slowly grows memory that's never reclaimed, until the application runs out of heap.",
+              "code": "String s = userInput.intern();  // dangerous with unbounded/high-cardinality input",
+              "solution": "// Avoid intern() outside a small, fixed, well-understood set of strings.\nString s = userInput;",
+              "detectionPattern": "\\w+\\.intern\\(\\)"
+            },
+            {
+              "id": "JAVA-STR-003",
+              "title": "Relying on the default platform charset",
+              "severity": "HIGH",
+              "description": "String.getBytes() and new String(byte[]) without an explicit charset use the JVM's default platform charset, which differs across operating systems and JVM configurations.",
+              "risk": "Code that encodes/decodes text correctly in local development (UTF-8 by default) corrupts non-ASCII characters when it runs on a server or container with a different default charset.",
+              "code": "byte[] bytes = str.getBytes();               // uses default charset\nString s = new String(bytes);                // same problem",
+              "solution": "byte[] bytes = str.getBytes(StandardCharsets.UTF_8);\nString s = new String(bytes, StandardCharsets.UTF_8);",
+              "detectionPattern": "\\.getBytes\\(\\)|new\\s+String\\(\\s*\\w+\\s*\\)"
+            },
+            {
+              "id": "JAVA-STR-004",
+              "title": "Using new String(\"literal\")",
+              "severity": "LOW",
+              "description": "A string literal is already interned and shared. Wrapping it in `new String(...)` creates a redundant duplicate object and opts out of the string pool for no benefit.",
+              "risk": "No functional bug, but every occurrence allocates an unnecessary object; at scale in a hot path this adds needless GC pressure for zero benefit.",
+              "code": "String s = new String(\"hello\");",
+              "solution": "String s = \"hello\";",
+              "detectionPattern": "new\\s+String\\(\"[^\"]*\"\\)"
+            }
+          ]
+        },
+        {
+          "name": "Dates & Time",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-DATE-001",
+              "title": "Using Calendar/Date instead of the java.time API",
+              "severity": "MEDIUM",
+              "description": "java.util.Date and Calendar are mutable, use confusing zero-based months, and have a long history of subtly wrong behavior around time zones and DST. java.time (Java 8+) fixes all of this with immutable, well-designed types.",
+              "risk": "A Calendar passed between two pieces of code gets mutated by one of them (calendar.add(...) mutates in place), and the other silently sees a different date than it expected.",
+              "code": "Calendar cal = Calendar.getInstance();\ncal.add(Calendar.DAY_OF_MONTH, 7);\nDate date = cal.getTime();",
+              "solution": "LocalDate date = LocalDate.now().plusDays(7);\n// or Instant / ZonedDateTime depending on whether a time zone matters",
+              "detectionPattern": "\\bnew\\s+(Date|GregorianCalendar)\\(|Calendar\\.getInstance\\("
+            },
+            {
+              "id": "JAVA-DATE-002",
+              "title": "Creating a new SimpleDateFormat per call, or sharing one across threads",
+              "severity": "HIGH",
+              "description": "SimpleDateFormat is not thread-safe — sharing one instance across threads corrupts its internal state, while creating a fresh one on every call wastes the (non-trivial) construction cost.",
+              "risk": "Two threads formatting dates through the same shared SimpleDateFormat at the same time can get back a mangled, wrong-looking date string with no exception thrown — just silently corrupted output.",
+              "code": "public String format(Date date) {\n    return new SimpleDateFormat(\"yyyy-MM-dd\").format(date);\n}",
+              "solution": "private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\");\n\npublic String format(LocalDate date) {\n    return date.format(FORMATTER);  // DateTimeFormatter is immutable and thread-safe\n}",
+              "detectionPattern": "new\\s+SimpleDateFormat\\("
+            }
+          ]
+        },
+        {
+          "name": "Method Contracts",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-CONTRACT-001",
+              "title": "Ignoring the return value of a method that signals success/failure",
+              "severity": "MEDIUM",
+              "description": "Methods like File.delete(), File.mkdirs(), or Collection.remove() return a boolean indicating whether the operation actually happened. Ignoring it treats a silent failure as if it succeeded.",
+              "risk": "A cleanup job that calls file.delete() without checking the result reports success even when the file was locked and never actually got deleted, masking a real operational problem.",
+              "code": "file.delete();     // return value ignored\nfile.mkdirs();     // same",
+              "solution": "if (!file.delete()) {\n    log.warn(\"Failed to delete file: {}\", file);\n}",
+              "detectionPattern": "\\b(file|dir)\\.(delete|mkdirs|renameTo)\\(\\)\\s*;"
+            },
+            {
+              "id": "JAVA-CONTRACT-002",
+              "title": "Comparable.compareTo() inconsistent with equals()",
+              "severity": "HIGH",
+              "description": "If compareTo() returns 0 for two objects that equals() says are not equal (or vice versa), sorted collections like TreeSet/TreeMap silently drop or misplace entries, because they use compareTo() for identity, not equals().",
+              "risk": "Adding an object to a TreeSet silently does nothing (or replaces an existing element) if its compareTo() considers it equal to something already in the set, even when equals() says they're different objects.",
+              "code": "// equals() compares name AND age, but compareTo() only compares name\npublic int compareTo(Person other) {\n    return this.name.compareTo(other.name);\n}",
+              "solution": "// Ensure compareTo() and equals() agree on when two objects are \"the same\".\n// If genuinely different orderings are needed, use separate Comparator instances\n// instead of encoding them into compareTo().",
+              "detectionPattern": "NO_CLEAN_REGEX: compareTo() implementation that compares a different set of fields than equals()"
+            },
+            {
+              "id": "JAVA-CONTRACT-003",
+              "title": "Comparing classes with getClass() == instead of instanceof",
+              "severity": "MEDIUM",
+              "description": "obj.getClass() == MyClass.class fails for any subclass or dynamic proxy (common with Hibernate, Spring AOP, and many mocking frameworks), even when the object genuinely satisfies an instanceof check.",
+              "risk": "An entity loaded as a Hibernate lazy proxy fails a getClass()-based equals()/type check that would have passed with instanceof, causing a spurious 'not equal' or 'wrong type' result purely because of the proxy wrapper.",
+              "code": "if (obj.getClass() == MyClass.class) { }",
+              "solution": "if (obj instanceof MyClass) { }\n// or, with pattern matching: if (obj instanceof MyClass my) { }",
+              "detectionPattern": "\\.getClass\\(\\)\\s*==\\s*\\w+\\.class"
             }
           ]
         }
@@ -597,6 +923,26 @@
               "code": "@Autowired\nprivate OrderService orderService;",
               "solution": "private final OrderService orderService;\n\npublic OrderController(OrderService orderService) {\n    this.orderService = orderService;\n}",
               "detectionPattern": "@Autowired\\s*\\n\\s*private"
+            },
+            {
+              "id": "SPRING-DI-002",
+              "title": "Unnecessary @Autowired on a bean's single constructor",
+              "severity": "LOW",
+              "description": "Since Spring 4.3, a class with exactly one constructor is auto-wired by Spring without needing @Autowired on it. Adding it anyway is harmless but purely visual noise every reader has to see past.",
+              "risk": "No functional risk, but it invites the belief that @Autowired is required there, and someone copies the pattern onto a class with multiple constructors where it actually matters which one gets picked.",
+              "code": "@Service\npublic class UserService {\n    @Autowired\n    public UserService(UserRepository repo) { }\n}",
+              "solution": "@Service\npublic class UserService {\n    public UserService(UserRepository repo) { }  // implicit, no annotation needed\n}",
+              "detectionPattern": "@Autowired\\s*\\n\\s*public\\s+\\w+\\s*\\("
+            },
+            {
+              "id": "SPRING-DI-003",
+              "title": "Using new to manually create a Spring-managed bean",
+              "severity": "HIGH",
+              "description": "Constructing a @Service/@Component/@Repository class with `new` bypasses the Spring container entirely — no dependency injection into it, and none of Spring's proxies (transactions, security, AOP) apply to it.",
+              "risk": "A manually-`new`'d service silently runs without @Transactional taking effect, so a multi-step write that should roll back on failure doesn't, because there's no Spring transaction proxy wrapping this instance.",
+              "code": "OrderService service = new OrderService();\nservice.createOrder(order);",
+              "solution": "// Let Spring inject the managed bean instead of constructing it manually.\npublic MyController(OrderService orderService) {\n    this.orderService = orderService;\n}",
+              "detectionPattern": "new\\s+\\w*(Service|Repository|Controller|Component)\\s*\\("
             }
           ]
         },
@@ -629,6 +975,70 @@
               "code": "public void transfer(Account from, Account to, BigDecimal amount) {\n    from.debit(amount);\n    accountRepository.save(from);\n    to.credit(amount);\n    accountRepository.save(to);\n}",
               "solution": "@Transactional\npublic void transfer(Account from, Account to, BigDecimal amount) {\n    from.debit(amount);\n    accountRepository.save(from);\n    to.credit(amount);\n    accountRepository.save(to);\n}",
               "detectionPattern": "NO_ANNOTATION_HEURISTIC: multi-repository-write method body without a @Transactional on the enclosing method"
+            }
+          ]
+        },
+        {
+          "name": "Bean Lifecycle",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "SPRING-BEAN-001",
+              "title": "Stateful Spring beans (mutable fields shared across requests)",
+              "severity": "CRITICAL",
+              "description": "A @Service/@Component bean is a singleton by default \u2014 one instance shared by every request. A mutable instance field on it is shared, unsynchronized state across every concurrent user.",
+              "risk": "Two users hitting the same endpoint at the same time see each other's data: one user's cart items appear in another user's session, because both requests mutate the exact same shared list.",
+              "code": "@Service\npublic class CartService {\n    private List<Item> items = new ArrayList<>();  // shared across every user!\n\n    public void addItem(Item item) {\n        items.add(item);\n    }\n}",
+              "solution": "@Service\npublic class CartService {\n    // Keep the bean stateless; store per-user state in the DB, a cache, or\n    // pass it explicitly as a method parameter instead of an instance field.\n    public void addItem(String userId, Item item) { }\n}",
+              "detectionPattern": "@(Service|Component|Controller|RestController)[\\s\\S]{0,200}private\\s+(?!final)\\w+\\s+\\w+\\s*=\\s*new"
+            }
+          ]
+        },
+        {
+          "name": "Configuration",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "SPRING-CONFIG-001",
+              "title": "Hardcoding configuration values instead of externalizing them",
+              "severity": "MEDIUM",
+              "description": "A URL, timeout, or port baked directly into Java source requires a full rebuild and redeploy to change, and can't differ between dev/staging/prod without maintaining separate code branches.",
+              "risk": "Rotating a third-party API's URL (a routine operational change) requires a code change, code review, and full deployment pipeline instead of an environment variable update.",
+              "code": "private String apiUrl = \"https://api.example.com/v1\";\nprivate int timeout = 5000;",
+              "solution": "@ConfigurationProperties(prefix = \"external.api\")\npublic class ApiProperties {\n    private String url;\n    private int timeout;\n    // getters/setters, populated from application.yml\n}",
+              "detectionPattern": "private\\s+(String|int)\\s+\\w*(Url|Timeout|Port|Host)\\w*\\s*=\\s*\"?[^;\"]+\"?;"
+            }
+          ]
+        },
+        {
+          "name": "Secrets Management",
+          "category": "SECURITY",
+          "practices": [
+            {
+              "id": "SPRING-SEC-001",
+              "title": "Storing secrets in application.yml committed to Git",
+              "severity": "CRITICAL",
+              "description": "A plaintext password or API key in a properties/YAML file checked into version control is exposed to everyone with repo access, and stays in git history even after being 'removed' in a later commit.",
+              "risk": "Anyone who ever had read access to the repository \u2014 including in its history \u2014 can extract and use the credential; rotating it is the only real fix once this has happened.",
+              "code": "spring:\n  datasource:\n    password: MySuperSecretPassword123",
+              "solution": "spring:\n  datasource:\n    password: ${DB_PASSWORD}\n# supplied via environment variable, Vault, or a secrets manager \u2014 never committed",
+              "detectionPattern": "password:\\s*[^$\\s][^\\n]*"
+            }
+          ]
+        },
+        {
+          "name": "Validation",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "SPRING-VALID-001",
+              "title": "Missing @Valid on a REST request body",
+              "severity": "MEDIUM",
+              "description": "@RequestBody without @Valid deserializes the JSON into the object but never runs the bean-validation constraints (@NotNull, @Size, etc.) declared on it, so invalid data reaches business logic unchecked.",
+              "risk": "A request missing a required field, or with a negative quantity, passes straight through the controller and fails later inside business logic with a much less specific, harder-to-debug error.",
+              "code": "@PostMapping(\"/users\")\npublic User create(@RequestBody User user) {\n    return userService.save(user);\n}",
+              "solution": "@PostMapping(\"/users\")\npublic UserResponse create(@Valid @RequestBody CreateUserRequest request) {\n    return userService.create(request);\n}",
+              "detectionPattern": "@RequestBody(?!\\s*@Valid)(?!.*@Valid.*@RequestBody)"
             }
           ]
         }
