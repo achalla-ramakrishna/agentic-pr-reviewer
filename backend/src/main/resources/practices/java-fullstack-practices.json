@@ -56,6 +56,136 @@
               "code": "try {\n    return user.getAddress().getCity();\n} catch (NullPointerException e) {\n    return \"Unknown\";\n}",
               "solution": "if (user != null && user.getAddress() != null) {\n    return user.getAddress().getCity();\n}\nreturn \"Unknown\";",
               "detectionPattern": "catch\\s*\\(\\s*(NullPointerException|ClassCastException)\\s+\\w+\\s*\\)"
+            },
+            {
+              "id": "JAVA-EXC-006",
+              "title": "Catching an exception just to wrap and rethrow it as the same type with no added value",
+              "severity": "LOW",
+              "description": "A catch block that immediately wraps an exception in a new instance of the same (or an equally generic) type, without adding context, translating to a different abstraction level, or performing any recovery, only adds noise and an extra stack frame.",
+              "risk": "The extra catch-wrap-rethrow adds a stack frame and a line of code that does nothing but obscure that the original exception was already fine to propagate as-is.",
+              "code": "try {\n    repository.save(entity);\n} catch (DataAccessException e) {\n    throw new DataAccessException(\"Save failed\", e); // adds nothing over letting it propagate\n}",
+              "solution": "// Just let it propagate if there's nothing to add:\nrepository.save(entity); // DataAccessException propagates naturally\n// Only wrap when translating to a different abstraction the caller actually needs:\ntry {\n    repository.save(entity);\n} catch (DataAccessException e) {\n    throw new OrderPersistenceException(\"Failed to save order \" + entity.getId(), e);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: catch blocks whose only action is `throw new SameOrEquallyGenericException(message, e)` with no new contextual information."
+            },
+            {
+              "id": "JAVA-EXC-007",
+              "title": "Exception messages with no contextual information",
+              "severity": "MEDIUM",
+              "description": "A message like \"Error occurred\" or \"Invalid input\" gives on-call engineers nothing to act on.",
+              "risk": "Including the relevant identifiers, values, or operation name turns a stack trace into an actionable lead.",
+              "code": "throw new IllegalArgumentException(\"Invalid input\"); // which input? what was invalid about it?",
+              "solution": "throw new IllegalArgumentException(\n    \"Order quantity must be positive, but was \" + quantity + \" for order \" + orderId);",
+              "detectionPattern": "NO_CLEAN_REGEX: Exception constructors called with short, generic literal strings ('Error', 'Invalid input', 'Failed') containing no variables from the surrounding context."
+            },
+            {
+              "id": "JAVA-EXC-008",
+              "title": "Ignoring suppressed exceptions from try-with-resources",
+              "severity": "LOW",
+              "description": "When both the try block and an automatic resource-close() throw, the close() exception is attached as a 'suppressed' exception rather than replacing the primary one.",
+              "risk": "Code that only logs e.getMessage() silently drops this second failure, which can hide a real resource-cleanup bug.",
+              "code": "try (Connection conn = dataSource.getConnection()) {\n    doWork(conn);\n} catch (SQLException e) {\n    log.error(\"Work failed: {}\", e.getMessage()); // any suppressed close() exception is never logged\n}",
+              "solution": "try (Connection conn = dataSource.getConnection()) {\n    doWork(conn);\n} catch (SQLException e) {\n    log.error(\"Work failed: {}\", e.getMessage(), e); // logs full stack trace\n    for (Throwable suppressed : e.getSuppressed()) {\n        log.error(\"Suppressed during cleanup: {}\", suppressed.getMessage());\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: catch blocks around try-with-resources that log only e.getMessage() and never inspect e.getSuppressed()."
+            },
+            {
+              "id": "JAVA-EXC-009",
+              "title": "Catching an exception and returning null instead of propagating or handling it explicitly",
+              "severity": "HIGH",
+              "description": "Converting a failure into a null return value moves the problem to every caller, who must now remember to null-check, and the original exception's context (type, message, stack trace) is completely lost.",
+              "risk": "The caller has no way to tell a genuine error apart from a legitimate 'not found', and the original exception's type, message, and stack trace are gone.",
+              "code": "public User findUser(String id) {\n    try {\n        return repository.findById(id);\n    } catch (DataAccessException e) {\n        return null; // caller has no idea a real error occurred vs. a legitimate 'not found'\n    }\n}",
+              "solution": "public Optional<User> findUser(String id) {\n    try {\n        return Optional.ofNullable(repository.findById(id));\n    } catch (DataAccessException e) {\n        throw new UserLookupException(\"Failed to look up user \" + id, e); // real errors propagate distinctly from 'not found'\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: catch blocks whose body is exactly `return null;` with no logging or rethrow, especially where the method's normal (non-error) result could also be null or empty."
+            },
+            {
+              "id": "JAVA-EXC-010",
+              "title": "Throwing an exception from a finally block, suppressing the original exception from the try block",
+              "severity": "HIGH",
+              "description": "If both the try block and its finally block throw, only the finally block's exception propagates \u2014 the original exception (often the more informative one) is silently discarded with no trace of it ever having occurred.",
+              "risk": "The finally block's exception silently replaces the try block's original exception, so the caller never learns what actually failed first.",
+              "code": "try {\n    process(); // throws OrderValidationException: \"quantity must be positive\"\n} finally {\n    cleanup(); // throws NullPointerException \u2014 this is the ONLY exception the caller ever sees\n}",
+              "solution": "try {\n    process();\n} finally {\n    try {\n        cleanup();\n    } catch (Exception cleanupEx) {\n        log.warn(\"Cleanup failed\", cleanupEx); // logged, doesn't mask the original failure\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: finally blocks containing code that can throw (especially resource cleanup) with no internal try/catch to prevent it from replacing an in-flight exception from the try block."
+            },
+            {
+              "id": "JAVA-EXC-011",
+              "title": "Logging and swallowing an exception while continuing execution as if it succeeded",
+              "severity": "HIGH",
+              "description": "Logging an exception is better than an empty catch block, but if execution proceeds normally afterward with no fallback or state correction, the program continues operating on data or state it knows is invalid, which is often worse than failing loudly.",
+              "risk": "The program continues operating on data it knows is wrong (an order marked complete when its stock was never actually decremented), which is often worse than failing loudly.",
+              "code": "try {\n    inventory.decrement(itemId, quantity);\n} catch (InsufficientStockException e) {\n    log.warn(\"Stock update failed for {}\", itemId, e);\n}\ncompleteOrder(); // proceeds to complete the order even though stock was never actually decremented",
+              "solution": "try {\n    inventory.decrement(itemId, quantity);\n} catch (InsufficientStockException e) {\n    log.warn(\"Stock update failed for {}\", itemId, e);\n    cancelOrder(orderId, \"insufficient stock\"); // explicit, correct fallback for this failure mode\n    return;\n}\ncompleteOrder();",
+              "detectionPattern": "NO_CLEAN_REGEX: catch blocks that log the exception but whose enclosing method continues to the same success path it would have taken without a failure, without an explicit compensating action."
+            },
+            {
+              "id": "JAVA-EXC-012",
+              "title": "Combining unrelated exception types in a single multi-catch block that need different handling",
+              "severity": "MEDIUM",
+              "description": "Java's multi-catch (catch (A | B e)) is meant for exceptions that genuinely deserve identical handling.",
+              "risk": "Grouping unrelated exception types together just to reduce code duplication means at least one of them ends up mishandled, since the shared block can't tailor its response to each.",
+              "code": "try {\n    process();\n} catch (IOException | IllegalStateException e) { // one is a recoverable I/O issue, the other a programming bug\n    log.warn(\"Processing issue\", e);\n    retry(); // retrying an IllegalStateException just repeats the same bug\n}",
+              "solution": "try {\n    process();\n} catch (IOException e) {\n    log.warn(\"I/O issue, retrying\", e);\n    retry();\n} catch (IllegalStateException e) {\n    log.error(\"Programming error, not retryable\", e);\n    throw e;\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Multi-catch blocks whose exception types have no common recovery strategy in the block body (e.g. one is retried, the other logically shouldn't be)."
+            },
+            {
+              "id": "JAVA-EXC-013",
+              "title": "Letting low-level exceptions leak across architectural layers instead of translating them",
+              "severity": "MEDIUM",
+              "description": "Allowing a persistence-layer exception like SQLException or a specific HTTP client exception to propagate all the way up to the service or presentation layer couples unrelated layers to implementation details and makes it impossible to swap the underlying technology without changing unrelated code.",
+              "risk": "The service or presentation layer becomes coupled to a persistence/network implementation detail, and swapping that underlying technology later requires changing unrelated layers.",
+              "code": "@GetMapping(\"/orders/{id}\")\npublic Order getOrder(@PathVariable String id) throws SQLException { // persistence detail leaking into the REST API contract\n    return repository.findById(id);\n}",
+              "solution": "@GetMapping(\"/orders/{id}\")\npublic Order getOrder(@PathVariable String id) {\n    try {\n        return repository.findById(id);\n    } catch (SQLException e) {\n        throw new OrderLookupException(\"Failed to load order \" + id, e); // translated to a layer-appropriate exception\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Method signatures in service/controller layers declaring throws clauses for, or directly propagating, exception types owned by a lower persistence/network layer."
+            },
+            {
+              "id": "JAVA-EXC-014",
+              "title": "Giving custom exceptions mutable state, making them unsafe to reuse or share",
+              "severity": "LOW",
+              "description": "Exception instances are often passed across thread boundaries (logged asynchronously, stored for later inspection, rethrown by multiple callers).",
+              "risk": "Mutable fields on a custom exception invite the same shared-mutable-state bugs as any other object, but are easy to overlook because exceptions 'feel' like one-shot, disposable values.",
+              "code": "public class ValidationException extends RuntimeException {\n    private List<String> errors = new ArrayList<>(); // mutable, exposed\n    public void addError(String error) { errors.add(error); } // callers can keep mutating after the exception is thrown/caught elsewhere\n}",
+              "solution": "public class ValidationException extends RuntimeException {\n    private final List<String> errors;\n    public ValidationException(List<String> errors) {\n        this.errors = List.copyOf(errors); // immutable snapshot at construction time\n    }\n    public List<String> getErrors() { return errors; }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Custom exception classes with non-final mutable fields or setter-style methods that mutate state after construction."
+            },
+            {
+              "id": "JAVA-EXC-015",
+              "title": "Attempting to catch and 'recover' from Error/OutOfMemoryError",
+              "severity": "HIGH",
+              "description": "Throwable subclasses under Error (OutOfMemoryError, StackOverflowError, VirtualMachineError) signal conditions the JVM itself may no longer be able to guarantee correct behavior for.",
+              "risk": "Catching them and trying to continue normal operation risks running in a corrupted or unpredictable state instead of failing safely.",
+              "code": "try {\n    processLargeFile(file);\n} catch (OutOfMemoryError e) {\n    log.warn(\"Ran out of memory, continuing anyway\", e); // the JVM may be in an unrecoverable state; 'continuing' is unsafe",
+              "solution": "// Prevent the condition instead of catching the Error:\nif (estimatedMemoryNeeded(file) > availableMemory()) {\n    throw new FileTooLargeException(\"File exceeds processing memory budget: \" + file);\n}\nprocessLargeFile(file);\n// If an Error must be caught (e.g. at a process boundary for graceful shutdown), log and terminate \u2014 don't resume normal work",
+              "detectionPattern": "NO_CLEAN_REGEX: catch (Error e) or catch (OutOfMemoryError e) / catch (StackOverflowError e) blocks whose code path continues normal business logic afterward instead of failing fast or shutting down."
+            },
+            {
+              "id": "JAVA-EXC-016",
+              "title": "Retrying an operation on exception without backoff or a maximum retry limit",
+              "severity": "HIGH",
+              "description": "An unconditional retry loop that immediately retries on failure with no cap and no delay can turn a transient blip into a self-inflicted denial-of-service against the downstream dependency, and never terminates if the failure is actually permanent.",
+              "risk": "An unconditional, immediate retry loop can turn a transient blip into a self-inflicted denial-of-service against the downstream dependency, and never terminates if the failure is actually permanent.",
+              "code": "while (true) {\n    try {\n        return callDownstreamService();\n    } catch (ServiceException e) {\n        // retry immediately, forever \u2014 no backoff, no limit\n    }\n}",
+              "solution": "int attempts = 0;\nwhile (attempts < MAX_ATTEMPTS) {\n    try {\n        return callDownstreamService();\n    } catch (ServiceException e) {\n        attempts++;\n        Thread.sleep(backoffMillis(attempts)); // exponential backoff\n    }\n}\nthrow new ServiceUnavailableException(\"Exceeded \" + MAX_ATTEMPTS + \" retry attempts\");",
+              "detectionPattern": "NO_CLEAN_REGEX: Retry loops around a fallible call with no attempt counter/max-retries condition and no delay between attempts."
+            },
+            {
+              "id": "JAVA-EXC-017",
+              "title": "Catching one exception type and throwing an unrelated exception type that breaks the caller's expected contract",
+              "severity": "MEDIUM",
+              "description": "If a method's documented/declared exceptions are IOException-related but a catch block translates a failure into, say, an unrelated NumberFormatException, callers who catch by the documented type miss it entirely, and it surfaces as an unhandled failure somewhere unrelated to where it actually occurred.",
+              "risk": "A global error handler that maps exception types to HTTP status codes can't reliably distinguish a user-facing business rule violation from an infrastructure failure, since both extend the same generic type.",
+              "code": "// Method is documented/declared to throw only OrderException\ntry {\n    validate(order);\n} catch (ValidationException e) {\n    throw new NumberFormatException(e.getMessage()); // unrelated type, breaks caller's catch (OrderException)\n}",
+              "solution": "try {\n    validate(order);\n} catch (ValidationException e) {\n    throw new OrderException(\"Validation failed for order \" + order.getId(), e); // consistent with the method's declared contract\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: catch blocks that throw an exception type unrelated to the method's declared throws clause or documented exception contract."
+            },
+            {
+              "id": "JAVA-EXC-018",
+              "title": "Using instanceof chains on caught exceptions instead of exception-type polymorphism",
+              "severity": "LOW",
+              "description": "Catching a broad exception type and then branching on instanceof for each specific subtype re-implements what multiple catch clauses (or a proper exception hierarchy with a handle() method) already do at the language level, and is easy to get wrong as new exception subtypes are added without updating every instanceof chain.",
+              "risk": "Adding a new exception subtype means finding and updating every instanceof chain by hand, with no compiler error to catch a chain that was missed.",
+              "code": "try {\n    process();\n} catch (Exception e) {\n    if (e instanceof ValidationException) { handleValidation((ValidationException) e); }\n    else if (e instanceof PaymentException) { handlePayment((PaymentException) e); }\n    else { handleGeneric(e); }\n}",
+              "solution": "try {\n    process();\n} catch (ValidationException e) {\n    handleValidation(e);\n} catch (PaymentException e) {\n    handlePayment(e);\n} catch (Exception e) {\n    handleGeneric(e);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: catch (Exception e) blocks whose body is a chain of if (e instanceof X) checks that could instead be separate catch clauses."
             }
           ]
         },
@@ -240,6 +370,16 @@
               "code": "if (!cache.containsKey(key)) { // check\n    cache.put(key, expensiveCompute(key)); // put \u2014 another thread can race in between\n}",
               "solution": "cache.computeIfAbsent(key, k -> expensiveCompute(k)); // atomic check-and-set\n// Or cache.merge(key, value, (old, v) -> combine(old, v)) for combining updates",
               "detectionPattern": "NO_CLEAN_REGEX: containsKey()/get() followed by a conditional put() on a ConcurrentHashMap (or any map shared across threads) instead of a single atomic compute-family call."
+            },
+            {
+              "id": "JAVA-CONC-008",
+              "title": "Not clearing MDC (Mapped Diagnostic Context) values between requests in thread-pooled environments",
+              "severity": "MEDIUM",
+              "description": "MDC stores per-thread key-value pairs (like a request/trace ID) that get included in every log line.",
+              "risk": "In a thread pool where threads are reused across requests, forgetting to clear the MDC at the end of a request lets its values leak into the logs of the next, unrelated request handled by the same thread.",
+              "code": "void handleRequest(String requestId) {\n    MDC.put(\"requestId\", requestId);\n    process(); // if this throws, MDC.remove() below is skipped\n    MDC.remove(\"requestId\");\n}",
+              "solution": "void handleRequest(String requestId) {\n    MDC.put(\"requestId\", requestId);\n    try {\n        process();\n    } finally {\n        MDC.remove(\"requestId\"); // guaranteed to run, even on exception, before the thread is returned to the pool\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: MDC.put() calls not paired with a corresponding MDC.remove()/MDC.clear() inside a finally block, in code running on a reused thread (servlet/executor thread pools)."
             }
           ]
         },
@@ -1108,6 +1248,36 @@
               "code": "public Optional<List<Order>> findOrders(String customerId) {\n    List<Order> found = repo.query(customerId);\n    return found.isEmpty() ? Optional.empty() : Optional.of(found);\n}\n// caller: orders.orElse(Collections.emptyList()).size() -- extra unwrap for no benefit",
               "solution": "public List<Order> findOrders(String customerId) {\n    return repo.query(customerId); // naturally empty if nothing found\n}\n// caller: findOrders(id).size() -- no unwrapping needed",
               "detectionPattern": "NO_CLEAN_REGEX: Method signatures returning Optional<List<...>>, Optional<Set<...>>, Optional<Map<...>>, or any Optional-wrapped collection type."
+            },
+            {
+              "id": "JAVA-API-011",
+              "title": "Overusing checked exceptions in API design",
+              "severity": "LOW",
+              "description": "Declaring checked exceptions on methods that callers can't meaningfully recover from forces every caller up the chain to add try/catch or throws boilerplate, often ending in an empty catch or a blind rethrow \u2014 the checked-exception contract stops adding value and starts adding friction.",
+              "risk": "Every caller up the chain has to add try/catch or throws boilerplate for a failure type it usually can't do anything differently for, and most just wrap-and-rethrow anyway.",
+              "code": "public interface PaymentGateway {\n    PaymentResult charge(Card card, BigDecimal amount) throws PaymentException, NetworkException, TimeoutException;\n    // every caller must handle or declare 3 checked types, most just wrap-and-rethrow anyway\n}",
+              "solution": "public interface PaymentGateway {\n    PaymentResult charge(Card card, BigDecimal amount); // throws an unchecked PaymentProcessingException internally\n}\n// Reserve checked exceptions for cases where the caller has a real, distinct recovery action per exception type",
+              "detectionPattern": "NO_CLEAN_REGEX: Public interfaces/APIs declaring multiple checked exception types where calling code uniformly wraps them in a single unchecked rethrow."
+            },
+            {
+              "id": "JAVA-API-012",
+              "title": "Using a single flat exception hierarchy that doesn't distinguish business-rule violations from technical failures",
+              "severity": "MEDIUM",
+              "description": "When both 'the customer's cart is empty' and 'the database connection pool is exhausted' extend the same generic AppException, callers can't distinguish recoverable, user-facing business errors from infrastructure failures without inspecting the message string, making generic error handling (e.g.",
+              "risk": "HTTP status mapping) unreliable.",
+              "code": "class AppException extends RuntimeException { ... } // used for everything\nthrow new AppException(\"Cart is empty\");\nthrow new AppException(\"Connection pool exhausted\"); // same type, wildly different meaning and handling",
+              "solution": "abstract class BusinessException extends RuntimeException { ... } // expected, user-facing\nabstract class TechnicalException extends RuntimeException { ... } // unexpected, infrastructure-facing\nclass EmptyCartException extends BusinessException { ... }\nclass ConnectionPoolExhaustedException extends TechnicalException { ... }\n// A global handler can now map BusinessException -> 400s and TechnicalException -> 500s generically",
+              "detectionPattern": "NO_CLEAN_REGEX: A single custom exception (super)class used both for user input/business-rule violations and for infrastructure/technical failures, with no subtype distinction."
+            },
+            {
+              "id": "JAVA-API-013",
+              "title": "Not documenting which exceptions a method can throw",
+              "severity": "LOW",
+              "description": "A method that can throw several unchecked exceptions under different conditions, with no @throws Javadoc and no indication in its name or signature, forces every caller to read its implementation (or discover failures in production) to learn what can go wrong and when.",
+              "risk": "Every caller has to read the method's implementation (or discover failures in production) to learn what can go wrong and under what conditions, since nothing documents it.",
+              "code": "public Order placeOrder(Cart cart) {\n    // can throw InsufficientStockException, PaymentDeclinedException, InvalidAddressException...\n    // ...but none of that is documented anywhere\n}",
+              "solution": "/**\n * @throws InsufficientStockException if any cart item is out of stock\n * @throws PaymentDeclinedException if the payment gateway declines the charge\n * @throws InvalidAddressException if the shipping address fails validation\n */\npublic Order placeOrder(Cart cart) { ... }",
+              "detectionPattern": "NO_CLEAN_REGEX: Public methods with multiple possible unchecked-exception outcomes and no @throws tags (or equivalent documentation) describing them."
             }
           ]
         },
@@ -1220,6 +1390,16 @@
               "code": "Map<String, Integer> counts = new HashMap<>();\nfor (String word : words) {\n    counts.put(word, counts.getOrDefault(word, 0) + 1); // manual boilerplate\n}",
               "solution": "Map<String, Long> counts = words.stream()\n    .collect(Collectors.groupingBy(w -> w, Collectors.counting()));",
               "detectionPattern": "NO_CLEAN_REGEX: Manual loops building a frequency map with getOrDefault()/merge()/containsKey() where a stream over the same source is already used elsewhere."
+            },
+            {
+              "id": "JAVA-STYLE-010",
+              "title": "Deeply nested try-catch blocks instead of early returns or guard clauses",
+              "severity": "LOW",
+              "description": "Stacking try-catch inside try-catch inside if-else pushes the actual business logic further right with each level, making the method's real purpose hard to follow.",
+              "risk": "Flattening with guard clauses (validate and return/throw early) usually expresses the same logic far more readably.",
+              "code": "public void process(Order order) {\n    try {\n        if (order != null) {\n            try {\n                if (order.isValid()) {\n                    doProcess(order); // buried 4 levels deep\n                }\n            } catch (ValidationException e) { log.warn(\"invalid\", e); }\n        }\n    } catch (Exception e) { log.error(\"failed\", e); }\n}",
+              "solution": "public void process(Order order) {\n    if (order == null) return;\n    try {\n        if (!order.isValid()) {\n            log.warn(\"Invalid order {}\", order.getId());\n            return;\n        }\n        doProcess(order); // flat, one level deep, the main logic reads clearly\n    } catch (Exception e) {\n        log.error(\"Processing failed for order {}\", order.getId(), e);\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Methods with try-catch blocks nested three or more levels deep inside conditionals or other try-catch blocks."
             }
           ]
         },
@@ -1344,6 +1524,46 @@
               "code": "log.info(\"Failed orders: {}\", failedOrders); // prints [com.example.Order@1b6d3586, com.example.Order@4e25154f]",
               "solution": "// In Order:\n@Override\npublic String toString() {\n    return \"Order{id=\" + id + \", status=\" + status + \"}\";\n}\nlog.info(\"Failed orders: {}\", failedOrders); // prints [Order{id=101, status=FAILED}, ...]",
               "detectionPattern": "NO_CLEAN_REGEX: Custom domain classes stored in collections that are passed directly to a logger, without a meaningful toString() override."
+            },
+            {
+              "id": "JAVA-LOG-005",
+              "title": "Using string concatenation in log statements instead of parameterized placeholders",
+              "severity": "LOW",
+              "description": "log.debug(\"value: \" + expensiveToString(obj)) evaluates the concatenation and any method calls inside it unconditionally, even when the DEBUG level is disabled and the message will be discarded.",
+              "risk": "Parameterized logging (e.g. SLF4J's {} placeholders) defers formatting until the log level check passes.",
+              "code": "log.debug(\"Processing order \" + order.getId() + \" with items: \" + order.getItems()); // getItems() toString() always runs, even if DEBUG is disabled",
+              "solution": "log.debug(\"Processing order {} with items: {}\", order.getId(), order.getItems()); // toString() deferred, skipped entirely if DEBUG is off",
+              "detectionPattern": "NO_CLEAN_REGEX: Logger calls (debug/trace especially) whose message argument is built with string concatenation (+) instead of the logging framework's placeholder syntax."
+            },
+            {
+              "id": "JAVA-LOG-006",
+              "title": "Logging every occurrence of a high-frequency recurring failure without throttling or deduplication",
+              "severity": "MEDIUM",
+              "description": "A failure that repeats rapidly (e.g.",
+              "risk": "a downstream service down, a retry loop, a hot code path hitting the same bad input) can produce thousands of near-identical log lines per minute, drowning out other signals and sometimes overwhelming the logging pipeline itself.",
+              "code": "while (true) {\n    try {\n        pollQueue();\n    } catch (ConnectionException e) {\n        log.error(\"Failed to connect\", e); // logs identically on every poll cycle, potentially thousands of times per minute\n    }\n}",
+              "solution": "// Log once, then only periodically while the condition persists:\nif (shouldLogFailure(lastLoggedAt)) { // e.g. at most once per minute\n    log.error(\"Failed to connect (repeating failure, suppressing further logs for 60s)\", e);\n    lastLoggedAt = Instant.now();\n}\n// Many logging frameworks/backends also support built-in rate limiting or log aggregation for this",
+              "detectionPattern": "NO_CLEAN_REGEX: Exception logging inside a tight loop, retry mechanism, or polling code path with no rate limiting, deduplication window, or circuit breaker."
+            },
+            {
+              "id": "JAVA-LOG-007",
+              "title": "Logging only e.getMessage()/e.toString() instead of passing the exception object to the logger",
+              "severity": "MEDIUM",
+              "description": "Passing just the message string discards the stack trace entirely, so when the log is later reviewed, there's no way to tell where in the code the exception originated or what the call chain looked like \u2014 exactly the information most needed to diagnose the failure.",
+              "risk": "The log line looks informative but contains none of the information (stack trace, call site) actually needed to diagnose where and why the failure happened.",
+              "code": "catch (Exception e) {\n    log.error(\"Failed to process order: \" + e.getMessage()); // no stack trace in the log output\n}",
+              "solution": "catch (Exception e) {\n    log.error(\"Failed to process order\", e); // logging frameworks print the full stack trace when the throwable is a separate argument\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Logger calls where an exception variable is interpolated into the message string via .getMessage()/.toString() instead of being passed as the logger's dedicated throwable argument."
+            },
+            {
+              "id": "JAVA-LOG-008",
+              "title": "Creating a new Logger instance per method call instead of a static final field per class",
+              "severity": "LOW",
+              "description": "LoggerFactory.getLogger(SomeClass.class) is meant to be called once and cached.",
+              "risk": "Calling it inside a method (or worse, per log statement) repeats a lookup/allocation on every invocation instead of reusing a single shared instance, adding avoidable overhead to hot paths.",
+              "code": "public void process(Order order) {\n    Logger log = LoggerFactory.getLogger(OrderService.class); // recreated on every call\n    log.info(\"Processing {}\", order.getId());\n}",
+              "solution": "private static final Logger log = LoggerFactory.getLogger(OrderService.class); // created once, reused for the lifetime of the class\n\npublic void process(Order order) {\n    log.info(\"Processing {}\", order.getId());\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: LoggerFactory.getLogger()/similar factory calls appearing inside method bodies rather than as a private static final field declaration."
             }
           ]
         },
@@ -2139,6 +2359,22 @@
               "code": "@PostMapping(\"/users\")\npublic User create(@RequestBody User user) {\n    return userService.save(user);\n}",
               "solution": "@PostMapping(\"/users\")\npublic UserResponse create(@Valid @RequestBody CreateUserRequest request) {\n    return userService.create(request);\n}",
               "detectionPattern": "@RequestBody(?!\\s*@Valid)(?!.*@Valid.*@RequestBody)"
+            }
+          ]
+        },
+        {
+          "name": "Error Handling",
+          "category": "SECURITY",
+          "practices": [
+            {
+              "id": "SPRING-ERR-001",
+              "title": "Returning raw exception messages or stack traces directly in API error responses",
+              "severity": "HIGH",
+              "description": "Exposing an internal exception's message or stack trace to an external API caller can leak implementation details (class names, SQL fragments, file paths, library versions) that aid an attacker, and typically shows the end user a confusing, unactionable wall of text instead of a helpful error.",
+              "risk": "An attacker (or a confused end user) sees internal class names, SQL fragments, or file paths that were never meant to leave the server, instead of a helpful, generic error message.",
+              "code": "catch (Exception e) {\n    return ResponseEntity.status(500).body(e.toString()); // may leak \"org.postgresql...SQLException: relation \\\"users\\\" does not exist\" to the client",
+              "solution": "catch (Exception e) {\n    String errorId = UUID.randomUUID().toString();\n    log.error(\"Unhandled error [{}]\", errorId, e); // full detail stays server-side\n    return ResponseEntity.status(500).body(new ErrorResponse(\"An unexpected error occurred\", errorId)); // generic message + correlation id for support",
+              "detectionPattern": "NO_CLEAN_REGEX: Exception handlers whose HTTP/API response body includes e.getMessage(), e.toString(), or a serialized stack trace."
             }
           ]
         }
