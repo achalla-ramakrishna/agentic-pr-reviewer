@@ -52,6 +52,16 @@
               "code": "public List<Order> findOrders(String userId) {\n    List<Order> orders = repository.findByUser(userId);\n    return orders.isEmpty() ? null : orders;\n}",
               "solution": "public List<Order> findOrders(String userId) {\n    return repository.findByUser(userId);\n}",
               "detectionPattern": "return\\s+null\\s*;"
+            },
+            {
+              "id": "JAVA-NULL-002",
+              "title": "Returning null instead of an empty array",
+              "severity": "MEDIUM",
+              "description": "Effective Java Item 54: a null array return forces every caller to add a null check that's easy to forget, mirroring the same problem as a null collection return.",
+              "risk": "A caller that iterates the result without a null check throws an NPE; this is especially easy to miss because arrays look like they should never be null.",
+              "code": "public Order[] findOrders(String userId) {\n    List<Order> orders = repository.findByUser(userId);\n    return orders.isEmpty() ? null : orders.toArray(new Order[0]);\n}",
+              "solution": "public Order[] findOrders(String userId) {\n    List<Order> orders = repository.findByUser(userId);\n    return orders.toArray(new Order[0]);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: array-returning method with a null branch instead of an empty array"
             }
           ]
         },
@@ -68,6 +78,36 @@
               "code": "if (status == \"APPROVED\") {\n    approve(order);\n}",
               "solution": "if (\"APPROVED\".equals(status)) {\n    approve(order);\n}",
               "detectionPattern": "==\\s*\"[^\"]*\"|\"[^\"]*\"\\s*=="
+            },
+            {
+              "id": "JAVA-EQ-002",
+              "title": "Overriding equals() without hashCode() (or vice versa)",
+              "severity": "HIGH",
+              "description": "Effective Java Item 11: equal objects must have equal hashCodes. Overriding one without the other breaks that contract.",
+              "risk": "The object is silently lost in a HashMap/HashSet: put() and get() with an 'equal' key can disagree on whether the entry exists, because they land in different hash buckets.",
+              "code": "public class OrderId {\n    private final String value;\n\n    @Override\n    public boolean equals(Object o) {\n        return o instanceof OrderId other && value.equals(other.value);\n    }\n}",
+              "solution": "public class OrderId {\n    private final String value;\n\n    @Override\n    public boolean equals(Object o) {\n        return o instanceof OrderId other && value.equals(other.value);\n    }\n\n    @Override\n    public int hashCode() {\n        return Objects.hash(value);\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: class overrides equals() but not hashCode(), or vice versa"
+            },
+            {
+              "id": "JAVA-EQ-003",
+              "title": "Comparing floating-point numbers with ==",
+              "severity": "MEDIUM",
+              "description": "Floating-point arithmetic is imprecise; two values that are mathematically equal can differ in their last bits after a computation.",
+              "risk": "0.1 + 0.2 == 0.3 evaluates to false in Java, so a guard relying on exact float/double equality silently takes the wrong branch.",
+              "code": "double total = 0.1 + 0.2;\nif (total == 0.3) {\n    applyDiscount();\n}",
+              "solution": "double total = 0.1 + 0.2;\nif (Math.abs(total - 0.3) < 1e-9) {\n    applyDiscount();\n}\n// or use BigDecimal for money/exact decimal arithmetic",
+              "detectionPattern": "double\\s+\\w+.*==\\s*\\d+\\.\\d+"
+            },
+            {
+              "id": "JAVA-EQ-004",
+              "title": "== on boxed types relying on autoboxing cache",
+              "severity": "MEDIUM",
+              "description": "Integer/Long caching only covers -128 to 127. Two boxed values in that range can be == true by accident, creating a false impression that == works for boxed comparison.",
+              "risk": "Code that 'works' in testing with small numbers (e.g. quantities 1-10) breaks in production once a real value like 1000 is compared, because it falls outside the cache range.",
+              "code": "Integer a = 1000;\nInteger b = 1000;\nif (a == b) {\n    // false! outside the Integer cache range (-128..127)\n}",
+              "solution": "Integer a = 1000;\nInteger b = 1000;\nif (a.equals(b)) {\n    // true, compares value\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: == comparison between two Integer/Long-typed variables"
             }
           ]
         },
@@ -84,6 +124,16 @@
               "code": "FileInputStream in = new FileInputStream(file);\nprocess(in);\nin.close();",
               "solution": "try (FileInputStream in = new FileInputStream(file)) {\n    process(in);\n}",
               "detectionPattern": "new\\s+(FileInputStream|FileOutputStream|BufferedReader|FileReader)\\([^)]*\\)\\s*;"
+            },
+            {
+              "id": "JAVA-RES-002",
+              "title": "Relying on finalize() for cleanup",
+              "severity": "MEDIUM",
+              "description": "finalize() is deprecated since Java 9, runs at an unpredictable time (or never), and was never a reliable cleanup mechanism.",
+              "risk": "A file handle or connection 'cleaned up' only in finalize() may stay open far longer than expected, or forever if the GC never collects the object, exhausting a limited resource pool.",
+              "code": "public class TempFileHolder {\n    private final File file;\n\n    @Override\n    protected void finalize() throws Throwable {\n        file.delete();\n    }\n}",
+              "solution": "public class TempFileHolder implements AutoCloseable {\n    private final File file;\n\n    @Override\n    public void close() {\n        file.delete();\n    }\n}\n// used with try-with-resources",
+              "detectionPattern": "protected\\s+void\\s+finalize\\s*\\("
             }
           ]
         },
@@ -100,6 +150,26 @@
               "code": "private final Map<String, Session> sessions = new HashMap<>();",
               "solution": "private final Map<String, Session> sessions = new ConcurrentHashMap<>();",
               "detectionPattern": "new\\s+HashMap<[^>]*>\\(\\)"
+            },
+            {
+              "id": "JAVA-CONC-002",
+              "title": "Swallowing InterruptedException without restoring interrupt status",
+              "severity": "MEDIUM",
+              "description": "Catching InterruptedException and doing nothing (or just logging) clears the thread's interrupt flag, so code further up the call stack that checks for cancellation never finds out.",
+              "risk": "A thread pool shutdown or task cancellation silently fails to stop this thread's work, because the interrupt signal was absorbed and never propagated.",
+              "code": "try {\n    Thread.sleep(1000);\n} catch (InterruptedException e) {\n    log.warn(\"Sleep interrupted\");\n}",
+              "solution": "try {\n    Thread.sleep(1000);\n} catch (InterruptedException e) {\n    Thread.currentThread().interrupt();\n    log.warn(\"Sleep interrupted\");\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: catch (InterruptedException e) block that doesn't call Thread.currentThread().interrupt()"
+            },
+            {
+              "id": "JAVA-CONC-003",
+              "title": "Forgetting lock.unlock() in a finally block",
+              "severity": "HIGH",
+              "description": "Unlike synchronized, an explicit Lock is not automatically released. If the code between lock() and unlock() throws, and unlock() isn't in a finally block, the lock is held forever.",
+              "risk": "One exception permanently deadlocks every other thread that needs the same lock, with no exception or log pointing at the actual cause.",
+              "code": "lock.lock();\nprocessOrder(order);\nlock.unlock();",
+              "solution": "lock.lock();\ntry {\n    processOrder(order);\n} finally {\n    lock.unlock();\n}",
+              "detectionPattern": "\\.lock\\(\\)\\s*;(?!\\s*try)"
             }
           ]
         },
@@ -116,6 +186,396 @@
               "code": "String csv = \"\";\nfor (Order order : orders) {\n    csv += order.getId() + \",\";\n}",
               "solution": "StringBuilder csv = new StringBuilder();\nfor (Order order : orders) {\n    csv.append(order.getId()).append(\",\");\n}",
               "detectionPattern": "for\\s*\\([^)]*\\)\\s*\\{[^}]*\\w+\\s*\\+=.*\\+"
+            },
+            {
+              "id": "JAVA-PERF-002",
+              "title": "Creating unnecessary objects in a hot path",
+              "severity": "LOW",
+              "description": "Effective Java Item 6: creating an equivalent object repeatedly (a fresh regex Pattern, a new wrapper) when an immutable/reusable one would do wastes allocation and GC pressure for no benefit.",
+              "risk": "A method compiling the same regex on every call, or called in a loop over thousands of rows, spends measurable CPU time on object creation instead of the actual work.",
+              "code": "public boolean isValidCode(String code) {\n    return code.matches(\"[A-Z]{3}-\\\\d{4}\");\n}",
+              "solution": "private static final Pattern CODE_PATTERN = Pattern.compile(\"[A-Z]{3}-\\\\d{4}\");\n\npublic boolean isValidCode(String code) {\n    return CODE_PATTERN.matcher(code).matches();\n}",
+              "detectionPattern": "\\.matches\\(\"[^\"]+\"\\)"
+            },
+            {
+              "id": "JAVA-PERF-003",
+              "title": "Using exceptions for ordinary control flow",
+              "severity": "LOW",
+              "description": "Effective Java Item 69: exceptions are for exceptional conditions. Using them to control a normal loop is slower than a plain condition check and obscures intent.",
+              "risk": "Throwing and catching an exception on every iteration of a hot loop costs orders of magnitude more than a bounds check, and confuses readers about whether the 'exceptional' path is actually expected.",
+              "code": "try {\n    int i = 0;\n    while (true) {\n        process(items[i++]);\n    }\n} catch (ArrayIndexOutOfBoundsException e) {\n    // done\n}",
+              "solution": "for (int i = 0; i < items.length; i++) {\n    process(items[i]);\n}",
+              "detectionPattern": "catch\\s*\\(\\s*ArrayIndexOutOfBoundsException"
+            },
+            {
+              "id": "JAVA-PERF-004",
+              "title": "Busy-waiting with Thread.sleep() instead of proper synchronization",
+              "severity": "LOW",
+              "description": "Polling a condition in a sleep loop wastes CPU and reacts late (up to one sleep interval late) instead of responding the instant the condition becomes true.",
+              "risk": "Under load, many busy-waiting threads burn CPU that real work needs, and the artificial polling delay adds latency that a wait/notify or CompletableFuture wouldn't have.",
+              "code": "while (!task.isDone()) {\n    Thread.sleep(100);\n}\nprocessResult(task.getResult());",
+              "solution": "task.thenAccept(this::processResult);\n// or: CountDownLatch / Object.wait()-notify() for the blocking case",
+              "detectionPattern": "while\\s*\\([^)]*\\)\\s*\\{\\s*Thread\\.sleep"
+            },
+            {
+              "id": "JAVA-PERF-005",
+              "title": "Using Vector/Hashtable/StringBuffer in single-threaded code",
+              "severity": "LOW",
+              "description": "These legacy classes synchronize every method call. In code that's never accessed from multiple threads, that's pure overhead with no benefit \u2014 ArrayList/HashMap/StringBuilder do the same job faster.",
+              "risk": "Every single-threaded call pays a lock acquisition/release cost for no reason; under profiling this shows up as unexplained synchronization overhead in a supposedly single-threaded path.",
+              "code": "Vector<Order> orders = new Vector<>();\nStringBuffer sb = new StringBuffer();",
+              "solution": "List<Order> orders = new ArrayList<>();\nStringBuilder sb = new StringBuilder();",
+              "detectionPattern": "\\bnew\\s+(Vector|Hashtable|StringBuffer)\\b"
+            }
+          ]
+        },
+        {
+          "name": "Encapsulation",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-ENCAP-001",
+              "title": "Public mutable fields instead of encapsulation",
+              "severity": "MEDIUM",
+              "description": "A public non-final field lets any caller put the object into an invalid state directly, bypassing whatever validation the class's methods would otherwise enforce.",
+              "risk": "Nothing stops order.status = null or an invalid value from being set directly, and the bug surfaces far from where the bad assignment happened.",
+              "code": "public class Order {\n    public String status;\n}",
+              "solution": "public class Order {\n    private String status;\n\n    public void setStatus(String status) {\n        this.status = Objects.requireNonNull(status);\n    }\n\n    public String getStatus() {\n        return status;\n    }\n}",
+              "detectionPattern": "public\\s+(?!final)\\w+\\s+\\w+;"
+            },
+            {
+              "id": "JAVA-ENCAP-002",
+              "title": "Returning a mutable internal array/collection directly from a getter",
+              "severity": "MEDIUM",
+              "description": "Handing out a direct reference to an internal mutable field lets the caller modify it and corrupt the object's internal state from outside, without going through any of the class's own methods.",
+              "risk": "Code far away from the class silently changes its internal list (e.g. clears it), and the class has no way to detect or prevent that mutation.",
+              "code": "public class Cart {\n    private final List<Item> items = new ArrayList<>();\n\n    public List<Item> getItems() {\n        return items;\n    }\n}",
+              "solution": "public class Cart {\n    private final List<Item> items = new ArrayList<>();\n\n    public List<Item> getItems() {\n        return Collections.unmodifiableList(items);\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: getter returns a direct reference to a mutable field instead of a copy/unmodifiable view"
+            },
+            {
+              "id": "JAVA-ENCAP-003",
+              "title": "Classes/members left more accessible than they need to be",
+              "severity": "LOW",
+              "description": "Effective Java Item 15: minimize the accessibility of every class and member. A public class or field that only needs package-private (or private) visibility becomes part of the API surface, whether that was intended or not.",
+              "risk": "A field or class that was never meant to be public gets used from outside its package by another team, and now can't be changed or removed without breaking them.",
+              "code": "public class OrderCalculator {\n    public BigDecimal taxRate;\n\n    public BigDecimal computeSubtotal(Order order) { return null; }\n}",
+              "solution": "class OrderCalculator {\n    private BigDecimal taxRate;\n\n    BigDecimal computeSubtotal(Order order) { return null; }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: public class/field with no external caller outside its own package"
+            },
+            {
+              "id": "JAVA-ENCAP-004",
+              "title": "No defensive copy of a mutable constructor argument",
+              "severity": "MEDIUM",
+              "description": "Effective Java Item 50: storing a reference to a caller-supplied mutable object (instead of copying it) means the caller can keep a reference and mutate the 'immutable' object's internals after construction.",
+              "risk": "An object advertised as immutable (e.g. a date range used as a cache key) changes value after being stored, silently corrupting whatever relied on it staying constant.",
+              "code": "public final class DateRange {\n    private final Date start;\n\n    public DateRange(Date start) {\n        this.start = start;\n    }\n}",
+              "solution": "public final class DateRange {\n    private final Date start;\n\n    public DateRange(Date start) {\n        this.start = new Date(start.getTime());\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: constructor stores a mutable-typed parameter (Date, array, List) without copying it"
+            }
+          ]
+        },
+        {
+          "name": "Generics & Type Safety",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-GEN-001",
+              "title": "Using raw types instead of generics",
+              "severity": "MEDIUM",
+              "description": "A raw type (List instead of List<Order>) disables generic type checking entirely, deferring what should be a compile error to a runtime ClassCastException.",
+              "risk": "A wrong-typed element added anywhere in the codebase compiles cleanly and only fails, with a confusing ClassCastException, at the unrelated line that reads it back out.",
+              "code": "List orders = new ArrayList();\norders.add(\"not an order\");\nOrder first = (Order) orders.get(0); // ClassCastException at runtime",
+              "solution": "List<Order> orders = new ArrayList<>();\norders.add(new Order()); // compile error to add a String\nOrder first = orders.get(0);",
+              "detectionPattern": "\\b(List|Map|Set|Collection)\\s+\\w+\\s*=\\s*new\\s+\\w+\\(\\)"
+            },
+            {
+              "id": "JAVA-TYPE-001",
+              "title": "int constants instead of an enum",
+              "severity": "LOW",
+              "description": "Effective Java Item 34: the 'int enum pattern' has no type safety \u2014 any int compiles where a status is expected, valid or not.",
+              "risk": "orderStatus = 99 compiles fine even though 99 isn't a real status, and printing the value gives a meaningless number instead of a readable name.",
+              "code": "public static final int STATUS_PENDING = 0;\npublic static final int STATUS_SHIPPED = 1;\n\nint status = 99; // compiles, meaningless",
+              "solution": "public enum OrderStatus { PENDING, SHIPPED }\n\nOrderStatus status = OrderStatus.PENDING; // only valid values compile",
+              "detectionPattern": "public\\s+static\\s+final\\s+int\\s+\\w*_[A-Z]+\\s*="
+            }
+          ]
+        },
+        {
+          "name": "Compiler Diagnostics",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-STYLE-001",
+              "title": "Ignoring compiler warnings instead of fixing them",
+              "severity": "LOW",
+              "description": "An unchecked or deprecation warning is the compiler telling you it found something it couldn't fully verify. Suppressing or ignoring it routinely means real bugs get waved through along with the noise.",
+              "risk": "A genuine unchecked-cast bug sits next to dozens of routinely-ignored warnings, indistinguishable from the noise, until it fails at runtime.",
+              "code": "@SuppressWarnings(\"unchecked\")\npublic List<Order> getOrders() {\n    return (List<Order>) rawOrdersField;\n}",
+              "solution": "public List<Order> getOrders() {\n    return orders; // typed as List<Order> from the start, no cast needed\n}",
+              "detectionPattern": "@SuppressWarnings\\(\"unchecked\"\\)"
+            },
+            {
+              "id": "JAVA-API-005",
+              "title": "Missing @Override on an intended override",
+              "severity": "MEDIUM",
+              "description": "Without @Override, a typo'd method signature silently compiles as a brand new overload instead of failing to compile, and the intended override never runs.",
+              "risk": "A subclass 'overrides' equals(Object o) but actually writes equals(MyClass o) \u2014 an overload, not an override \u2014 and the superclass's equals() keeps running unnoticed.",
+              "code": "public class OrderId {\n    public boolean equals(OrderId other) {\n        return value.equals(other.value);\n    }\n}",
+              "solution": "public class OrderId {\n    @Override\n    public boolean equals(Object other) {\n        return other instanceof OrderId o && value.equals(o.value);\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: method named equals/hashCode/toString without an @Override annotation"
+            }
+          ]
+        },
+        {
+          "name": "Design",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-DESIGN-001",
+              "title": "Overusing static state",
+              "severity": "MEDIUM",
+              "description": "Static mutable fields are effectively global variables \u2014 shared across every caller, hard to isolate in tests, and a source of hidden coupling between unrelated code paths.",
+              "risk": "A test that mutates the static state leaks that change into the next test, causing flaky, order-dependent test failures that are hard to reproduce.",
+              "code": "public class RequestContext {\n    public static String currentUserId;\n}",
+              "solution": "public class RequestContext {\n    private final String currentUserId;\n\n    public RequestContext(String currentUserId) {\n        this.currentUserId = currentUserId;\n    }\n}",
+              "detectionPattern": "public\\s+static\\s+(?!final)\\w+\\s+\\w+;"
+            },
+            {
+              "id": "JAVA-DESIGN-002",
+              "title": "instanceof/casting chains instead of polymorphism",
+              "severity": "LOW",
+              "description": "A growing if/else-if chain checking an object's runtime type and casting it is exactly what virtual dispatch (an overridden method) is meant to replace.",
+              "risk": "Every new subtype requires finding and updating every instanceof chain across the codebase; missing one is a silent bug, not a compile error.",
+              "code": "if (shape instanceof Circle c) {\n    return Math.PI * c.getRadius() * c.getRadius();\n} else if (shape instanceof Square s) {\n    return s.getSide() * s.getSide();\n}",
+              "solution": "public interface Shape {\n    double area();\n}\n\nclass Circle implements Shape {\n    public double area() { return Math.PI * radius * radius; }\n}",
+              "detectionPattern": "instanceof\\s+\\w+.*else\\s+if\\s*\\([^)]*instanceof"
+            },
+            {
+              "id": "JAVA-DESIGN-003",
+              "title": "Long methods / God classes doing too much",
+              "severity": "MEDIUM",
+              "description": "A method or class handling several unrelated responsibilities (validation, persistence, notification, formatting) is impossible to test in isolation and risky to change \u2014 every edit risks breaking an unrelated concern.",
+              "risk": "A one-line fix to the notification logic requires understanding and re-testing the entire method, including the unrelated persistence and validation code that method also does.",
+              "code": "public void processOrder(Order order) {\n    // 150 lines: validate, save, charge card, send email, update inventory, log analytics...\n}",
+              "solution": "public void processOrder(Order order) {\n    validator.validate(order);\n    Order saved = repository.save(order);\n    paymentService.charge(saved);\n    notificationService.notifyCustomer(saved);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: method body exceeding roughly 80-100 lines mixing multiple unrelated responsibilities"
+            },
+            {
+              "id": "JAVA-DESIGN-004",
+              "title": "Deep inheritance hierarchies instead of composition",
+              "severity": "LOW",
+              "description": "Favoring composition (\"has-a\") over inheritance (\"is-a\") when there's no true substitutability relationship keeps a change three levels up from rippling unpredictably through every subclass.",
+              "risk": "A behavior change in a base class two or three levels up breaks a subclass's assumptions in a way that's hard to trace back to the actual change.",
+              "code": "class Vehicle { void move() {} }\nclass Car extends Vehicle { }\nclass SportsCar extends Car { }\nclass ElectricSportsCar extends SportsCar { }",
+              "solution": "class Vehicle {\n    private final Engine engine;\n    private final Drivetrain drivetrain;\n\n    void move() { drivetrain.propel(engine); }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: inheritance chain deeper than 2-3 levels for a non-framework class"
+            },
+            {
+              "id": "JAVA-DESIGN-005",
+              "title": "Hardcoding a dependency instead of injecting it",
+              "severity": "MEDIUM",
+              "description": "Effective Java Item 5: a class that constructs its own collaborator internally can't be tested with a fake/mock and can't be reconfigured without editing the class's source.",
+              "risk": "Writing a unit test for this class requires the real dependency (a real DB connection, a real HTTP client) to exist and work, turning a unit test into a slow, flaky integration test.",
+              "code": "public class OrderService {\n    private final PaymentGateway gateway = new StripeGateway();\n}",
+              "solution": "public class OrderService {\n    private final PaymentGateway gateway;\n\n    public OrderService(PaymentGateway gateway) {\n        this.gateway = gateway;\n    }\n}",
+              "detectionPattern": "private\\s+final\\s+\\w+\\s+\\w+\\s*=\\s*new\\s+\\w+\\("
+            },
+            {
+              "id": "JAVA-DESIGN-006",
+              "title": "Inheritance used for code reuse across unrelated classes",
+              "severity": "MEDIUM",
+              "description": "Effective Java Item 18: extending a class purely to reuse its methods (not because of a genuine is-a relationship) couples the subclass to the superclass's implementation details, which can change underneath it.",
+              "risk": "A superclass method the subclass never even calls changes its internal behavior in a library upgrade, and the subclass breaks in a way nobody expected because it was never really a semantic subtype.",
+              "code": "public class InstrumentedList<E> extends ArrayList<E> {\n    // relies on ArrayList's internal add() call pattern, which isn't guaranteed\n}",
+              "solution": "public class InstrumentedList<E> {\n    private final List<E> delegate = new ArrayList<>();\n    private int count;\n\n    public boolean add(E e) {\n        count++;\n        return delegate.add(e);\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: class extends a concrete collection/utility class purely to add instrumentation"
+            },
+            {
+              "id": "JAVA-DESIGN-007",
+              "title": "A class designed for inheritance with no documentation of overridable behavior",
+              "severity": "LOW",
+              "description": "Effective Java Item 19: if a class permits subclassing, it must document exactly how its methods interact \u2014 or explicitly prohibit inheritance (final, or a private constructor).",
+              "risk": "A subclass overrides a method the base class secretly calls from its own constructor, and the override runs before the subclass's own fields are initialized, producing confusing null/zero values.",
+              "code": "public class Loader {\n    public Loader() {\n        load();\n    }\n    protected void load() { }\n}",
+              "solution": "public final class Loader {\n    public Loader() {\n        load();\n    }\n    private void load() { }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: constructor calls an overridable (non-final, non-private) instance method"
+            },
+            {
+              "id": "JAVA-DESIGN-008",
+              "title": "Using an abstract class where an interface would give more flexibility",
+              "severity": "LOW",
+              "description": "Effective Java Item 20: a class can only extend one abstract class but can implement many interfaces. Choosing an abstract class as the contract forecloses a consumer's ability to also extend something else.",
+              "risk": "A class that needs to satisfy this contract and also extend an unrelated base class (e.g. a framework's base class) simply can't, because Java has no multiple inheritance of classes.",
+              "code": "public abstract class Validator {\n    public abstract boolean isValid(Order order);\n}",
+              "solution": "public interface Validator {\n    boolean isValid(Order order);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: abstract class with only abstract methods and no shared state/implementation"
+            }
+          ]
+        },
+        {
+          "name": "Immutability",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-IMMUT-001",
+              "title": "Value objects that should be immutable but aren't",
+              "severity": "MEDIUM",
+              "description": "Effective Java Item 17: a value-like object (Money, DateRange, Point) with setters can be mutated by any holder, and that mutation is invisible to every other piece of code holding the same reference.",
+              "risk": "A Money object passed into a pricing calculation gets mutated by that calculation, and the caller's own copy silently changes value even though they never called a setter themselves.",
+              "code": "public class Money {\n    private BigDecimal amount;\n    public void setAmount(BigDecimal amount) { this.amount = amount; }\n}",
+              "solution": "public final class Money {\n    private final BigDecimal amount;\n    public Money(BigDecimal amount) { this.amount = amount; }\n    public Money add(Money other) { return new Money(amount.add(other.amount)); }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: class with a setter for a field that conceptually represents a fixed value (money, date range, coordinate)"
+            }
+          ]
+        },
+        {
+          "name": "Collections",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-COLL-002",
+              "title": "Modifying a collection while iterating it with a for-each loop",
+              "severity": "MEDIUM",
+              "description": "Calling list.remove()/add() on the collection itself during a for-each loop (rather than via the Iterator) throws a ConcurrentModificationException \u2014 even single-threaded.",
+              "risk": "Removing an item conditionally inside a for-each loop throws at runtime the moment more than one item needs removing, a bug that's easy to miss in a quick manual test with only one matching item.",
+              "code": "for (Order order : orders) {\n    if (order.isCancelled()) {\n        orders.remove(order); // ConcurrentModificationException\n    }\n}",
+              "solution": "orders.removeIf(Order::isCancelled);",
+              "detectionPattern": "for\\s*\\([^)]*:\\s*\\w+\\)\\s*\\{[^}]*\\w+\\.remove\\("
+            }
+          ]
+        },
+        {
+          "name": "API Design",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-API-001",
+              "title": "Ambiguous method overloads with varargs/autoboxing",
+              "severity": "LOW",
+              "description": "Overloads that differ only by a boxed vs. primitive type, or that mix a fixed-arity overload with a varargs one, can resolve to a different method than the author intended, silently.",
+              "risk": "Adding a new overload later changes which existing overload a call site resolves to, without any compile error, because overload resolution rules are subtle and easy to get wrong.",
+              "code": "void process(int x) { }\nvoid process(Integer x) { }\nvoid process(int... x) { }",
+              "solution": "// Prefer a single, clearly-named method per intent instead of overloads that only differ by boxing/varargs\nvoid processSingle(int x) { }\nvoid processMany(int[] x) { }",
+              "detectionPattern": "NO_CLEAN_REGEX: multiple overloads of the same method name differing only in boxed/primitive or varargs form"
+            },
+            {
+              "id": "JAVA-API-002",
+              "title": "Telescoping constructors for many optional parameters",
+              "severity": "LOW",
+              "description": "Effective Java Item 2: a chain of constructors adding one more optional parameter each time forces callers to pass values they don't care about just to reach the one they need, and it's easy to swap two same-typed arguments by mistake.",
+              "risk": "A caller passing (10, 5, true, false) to a 4-parameter constructor swaps the two booleans without any compile error, and the bug isn't visible until the wrong behavior shows up at runtime.",
+              "code": "public Pizza(int size) { this(size, false); }\npublic Pizza(int size, boolean cheese) { this(size, cheese, false); }\npublic Pizza(int size, boolean cheese, boolean pepperoni) { }",
+              "solution": "Pizza pizza = Pizza.builder()\n    .size(12)\n    .cheese(true)\n    .pepperoni(false)\n    .build();",
+              "detectionPattern": "NO_CLEAN_REGEX: chain of 3+ overloaded constructors each calling this(...) with one more parameter"
+            },
+            {
+              "id": "JAVA-API-003",
+              "title": "No Builder pattern for a class with many constructor parameters",
+              "severity": "LOW",
+              "description": "Effective Java Item 2: beyond roughly 4 constructor parameters (especially several of the same type), positional arguments become genuinely hard to get right at every call site.",
+              "risk": "Two adjacent String or int parameters get passed in the wrong order; it compiles fine and fails silently or produces subtly wrong behavior.",
+              "code": "new Order(\"user-123\", \"addr-1\", \"addr-2\", true, false, 3, 19.99);",
+              "solution": "Order.builder()\n    .userId(\"user-123\")\n    .shippingAddress(\"addr-1\")\n    .billingAddress(\"addr-2\")\n    .giftWrap(true)\n    .expedited(false)\n    .quantity(3)\n    .price(19.99)\n    .build();",
+              "detectionPattern": "NO_CLEAN_REGEX: constructor call with 5+ positional arguments of primitive/String type"
+            },
+            {
+              "id": "JAVA-API-004",
+              "title": "The constant-interface antipattern",
+              "severity": "LOW",
+              "description": "Effective Java Item 22: an interface that exists only to declare constants leaks those constants into the public API of every class that implements it, whether or not that class wants them exposed.",
+              "risk": "Implementing the interface for its constants also commits every implementing class to exposing them publicly forever, and removing the constants later is a breaking change for classes that only ever wanted the behavior, not the constants.",
+              "code": "public interface PhysicalConstants {\n    double AVOGADROS_NUMBER = 6.022e23;\n}\n\npublic class Chemistry implements PhysicalConstants { }",
+              "solution": "public final class PhysicalConstants {\n    private PhysicalConstants() {}\n    public static final double AVOGADROS_NUMBER = 6.022e23;\n}\n\n// usage: PhysicalConstants.AVOGADROS_NUMBER",
+              "detectionPattern": "interface\\s+\\w+\\s*\\{\\s*(double|int|String)\\s+[A-Z_]+\\s*="
+            },
+            {
+              "id": "JAVA-API-006",
+              "title": "Declaring a variable by its implementation type instead of its interface",
+              "severity": "LOW",
+              "description": "Effective Java Item 64: declaring HashMap<String, Order> instead of Map<String, Order> locks every line that uses it to the concrete implementation, even though nothing about the logic actually needs it.",
+              "risk": "Swapping HashMap for a LinkedHashMap or a concurrent variant later requires hunting down every declared-as-HashMap variable across the codebase instead of changing one line at the construction site.",
+              "code": "HashMap<String, Order> ordersByUserId = new HashMap<>();",
+              "solution": "Map<String, Order> ordersByUserId = new HashMap<>();",
+              "detectionPattern": "\\b(HashMap|ArrayList|HashSet|LinkedList)<[^>]*>\\s+\\w+\\s*="
+            },
+            {
+              "id": "JAVA-API-007",
+              "title": "Inventing a custom exception where a standard one already fits",
+              "severity": "LOW",
+              "description": "Effective Java Item 72: IllegalArgumentException, IllegalStateException, and similar standard types already cover most common error conditions. An ad hoc custom type for the same situation isn't recognized by tooling or reviewers the way the standard ones are.",
+              "risk": "A caller writing a catch block for the well-known IllegalArgumentException doesn't catch this class's homemade InvalidQuantityException, and the error propagates further than intended.",
+              "code": "public class InvalidQuantityException extends RuntimeException {\n    public InvalidQuantityException(String msg) { super(msg); }\n}\n\nif (quantity < 0) {\n    throw new InvalidQuantityException(\"quantity must be non-negative\");\n}",
+              "solution": "if (quantity < 0) {\n    throw new IllegalArgumentException(\"quantity must be non-negative: \" + quantity);\n}",
+              "detectionPattern": "class\\s+\\w*Exception\\s+extends\\s+(RuntimeException|Exception)"
+            }
+          ]
+        },
+        {
+          "name": "Memory Management",
+          "category": "PERFORMANCE",
+          "practices": [
+            {
+              "id": "JAVA-MEM-001",
+              "title": "Obsolete object references in a manually-managed structure",
+              "severity": "MEDIUM",
+              "description": "Effective Java Item 7: popping an element off a manually-managed array-backed stack (or removing from a cache) without nulling out the reference leaves the object reachable, so the garbage collector can never reclaim it.",
+              "risk": "A long-running service's memory grows slowly and steadily until it OOMs, and the leak is invisible in a short-lived test because it only shows up after enough push/pop cycles accumulate.",
+              "code": "public Object pop() {\n    return elements[--size]; // the popped slot still references the object\n}",
+              "solution": "public Object pop() {\n    Object result = elements[--size];\n    elements[size] = null; // let the GC reclaim it\n    return result;\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: manual array-backed collection whose remove/pop doesn't null out the vacated slot"
+            }
+          ]
+        },
+        {
+          "name": "Readability",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-STYLE-002",
+              "title": "Magic numbers/strings instead of named constants",
+              "severity": "LOW",
+              "description": "A bare literal repeated across the codebase means the meaning lives only in the author's head, and every occurrence has to be found and updated together if it changes.",
+              "risk": "Six months later nobody remembers what the number means, or a typo'd literal in one of the many copies silently fails to match.",
+              "code": "if (order.getStatusCode() == 3) {\n    shipOrder(order);\n}",
+              "solution": "private static final int STATUS_APPROVED = 3;\n\nif (order.getStatusCode() == STATUS_APPROVED) {\n    shipOrder(order);\n}",
+              "detectionPattern": "==\\s*\\d+\\s*\\)"
+            },
+            {
+              "id": "JAVA-STYLE-003",
+              "title": "Anonymous inner class where a lambda would be clearer",
+              "severity": "LOW",
+              "description": "Effective Java Item 42/43: for a functional interface, a lambda is shorter and avoids the anonymous class's confusing this (which refers to the anonymous class instance, not the enclosing object).",
+              "risk": "Code inside an anonymous class that calls this.someField silently reads the anonymous class's own field/method instead of the enclosing object's, a mistake a lambda's lexical this doesn't allow.",
+              "code": "button.setOnClickListener(new OnClickListener() {\n    @Override\n    public void onClick(View v) {\n        handleClick();\n    }\n});",
+              "solution": "button.setOnClickListener(v -> handleClick());",
+              "detectionPattern": "new\\s+\\w+\\s*\\(\\)\\s*\\{\\s*@Override"
+            },
+            {
+              "id": "JAVA-STYLE-004",
+              "title": "Overly broad variable scope",
+              "severity": "LOW",
+              "description": "Effective Java Item 57: declaring a variable well before its first use, or reusing a loop variable name across unrelated loops, makes it easy to accidentally reference a stale value from an earlier iteration or an unrelated code path.",
+              "risk": "Copy-pasting a loop body and forgetting to reset a variable declared outside both loops carries a stale value from the first loop into the second, silently.",
+              "code": "int total = 0;\n// ...30 lines of unrelated code...\nfor (Order o : orders) {\n    total += o.getAmount();\n}",
+              "solution": "// ...30 lines of unrelated code...\nint total = 0;\nfor (Order o : orders) {\n    total += o.getAmount();\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: variable declared many lines before its first actual use"
+            }
+          ]
+        },
+        {
+          "name": "Code Organization",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "JAVA-ORG-001",
+              "title": "Multiple top-level classes in a single source file",
+              "severity": "LOW",
+              "description": "Effective Java Item 25: Java allows several top-level classes in one .java file, but which one 'wins' if the same class is accidentally defined in two files can depend on compilation order.",
+              "risk": "Two files each define a small unrelated Helper class at the top level; depending on compile order, the build silently picks one definition over the other with no error.",
+              "code": "// Utils.java\nclass Helper { }\nclass Formatter { }\npublic class Utils { }",
+              "solution": "// Helper.java\nclass Helper { }\n\n// Formatter.java\nclass Formatter { }\n\n// Utils.java\npublic class Utils { }",
+              "detectionPattern": "NO_CLEAN_REGEX: more than one top-level class/interface declaration in a single .java file"
             }
           ]
         }
