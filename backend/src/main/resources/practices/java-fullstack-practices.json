@@ -154,6 +154,16 @@
               "code": "public class TempFileHolder {\n    private final File file;\n\n    @Override\n    protected void finalize() throws Throwable {\n        file.delete();\n    }\n}",
               "solution": "public class TempFileHolder implements AutoCloseable {\n    private final File file;\n\n    @Override\n    public void close() {\n        file.delete();\n    }\n}\n// used with try-with-resources",
               "detectionPattern": "protected\\s+void\\s+finalize\\s*\\("
+            },
+            {
+              "id": "JAVA-RES-003",
+              "title": "Not closing AutoCloseable streams returned by Files.lines()/Files.list()",
+              "severity": "HIGH",
+              "description": "Files.lines() and Files.list() open an underlying file handle/directory stream that must be closed.",
+              "risk": "Unlike in-memory streams, these implement AutoCloseable and leak file descriptors if not used in a try-with-resources block.",
+              "code": "Stream<String> lines = Files.lines(path);\nlines.forEach(System.out::println); // file handle never closed",
+              "solution": "try (Stream<String> lines = Files.lines(path)) {\n    lines.forEach(System.out::println);\n} // file handle closed automatically",
+              "detectionPattern": "NO_CLEAN_REGEX: Files.lines()/Files.list()/Files.walk() results assigned to a variable and used outside a try-with-resources block."
             }
           ]
         },
@@ -195,7 +205,7 @@
               "id": "JAVA-CONC-004",
               "title": "Calling run() instead of start() on a Thread",
               "severity": "HIGH",
-              "description": "run() executes the Runnable's code on the current thread, synchronously. It does not create or start a new thread — only start() does that.",
+              "description": "run() executes the Runnable's code on the current thread, synchronously. It does not create or start a new thread \u2014 only start() does that.",
               "risk": "Code that looks concurrent (spawns a Thread, calls a method on it) actually runs entirely sequentially on the calling thread; any expected parallelism silently never happens.",
               "code": "Thread t = new Thread(() -> doWork());\nt.run();  // runs in the calling thread!",
               "solution": "Thread t = new Thread(() -> doWork());\nt.start();  // actually starts a new thread\n// or prefer ExecutorService / virtual threads over raw Thread",
@@ -210,6 +220,26 @@
               "code": "thread.stop();\nthread.suspend();",
               "solution": "thread.interrupt();\n// or a higher-level construct: ExecutorService.shutdownNow(), Future.cancel()",
               "detectionPattern": "\\.(stop|suspend|resume)\\(\\)\\s*;"
+            },
+            {
+              "id": "JAVA-CONC-006",
+              "title": "Iterating a Collections.synchronizedList() without external synchronization",
+              "severity": "HIGH",
+              "description": "Collections.synchronizedXxx() wrappers make individual method calls thread-safe, but iteration is not atomic.",
+              "risk": "Iterating without synchronizing on the collection itself can still throw ConcurrentModificationException if another thread mutates it mid-iteration.",
+              "code": "List<String> list = Collections.synchronizedList(new ArrayList<>());\nfor (String s : list) { // not synchronized externally\n    process(s); // ConcurrentModificationException if another thread modifies list concurrently\n}",
+              "solution": "List<String> list = Collections.synchronizedList(new ArrayList<>());\nsynchronized (list) {\n    for (String s : list) {\n        process(s);\n    }\n}\n// Or prefer a concurrent collection like CopyOnWriteArrayList for iterate-heavy, low-write use cases",
+              "detectionPattern": "NO_CLEAN_REGEX: for-each loops over a Collections.synchronizedXxx() collection with no surrounding synchronized(collection) block."
+            },
+            {
+              "id": "JAVA-CONC-007",
+              "title": "Non-atomic get-check-put pattern on ConcurrentHashMap instead of computeIfAbsent()/merge()",
+              "severity": "HIGH",
+              "description": "Checking containsKey()/get() and then calling put() as separate steps is not atomic.",
+              "risk": "Two threads can interleave between the check and the write, causing lost updates or duplicate initialization, even on a thread-safe map implementation.",
+              "code": "if (!cache.containsKey(key)) { // check\n    cache.put(key, expensiveCompute(key)); // put \u2014 another thread can race in between\n}",
+              "solution": "cache.computeIfAbsent(key, k -> expensiveCompute(k)); // atomic check-and-set\n// Or cache.merge(key, value, (old, v) -> combine(old, v)) for combining updates",
+              "detectionPattern": "NO_CLEAN_REGEX: containsKey()/get() followed by a conditional put() on a ConcurrentHashMap (or any map shared across threads) instead of a single atomic compute-family call."
             }
           ]
         },
@@ -266,6 +296,116 @@
               "code": "Vector<Order> orders = new Vector<>();\nStringBuffer sb = new StringBuffer();",
               "solution": "List<Order> orders = new ArrayList<>();\nStringBuilder sb = new StringBuilder();",
               "detectionPattern": "\\bnew\\s+(Vector|Hashtable|StringBuffer)\\b"
+            },
+            {
+              "id": "JAVA-PERF-006",
+              "title": "Overusing parallelStream() without understanding overhead or thread-safety",
+              "severity": "HIGH",
+              "description": "parallelStream() shares a common fork-join pool across the whole application.",
+              "risk": "For small collections or I/O-bound/non-thread-safe operations it can be slower than sequential and introduces race conditions on shared mutable state.",
+              "code": "list.parallelStream()\n    .forEach(item -> sharedCounter++); // race condition, non-atomic increment\n// also applied to a 20-element list where overhead exceeds any gain",
+              "solution": "list.stream()\n    .forEach(item -> sharedCounter.incrementAndGet()); // sequential, or use AtomicInteger if parallel is truly needed\n// Only parallelize large, CPU-bound, stateless workloads, and measure first",
+              "detectionPattern": "NO_CLEAN_REGEX: parallelStream() on small collections, on I/O-bound operations, or pipelines that mutate shared non-thread-safe state."
+            },
+            {
+              "id": "JAVA-PERF-007",
+              "title": "Using Stream<Integer>/Stream<Long> instead of IntStream/LongStream/DoubleStream for numeric work",
+              "severity": "LOW",
+              "description": "Stream<Integer> boxes every element, causing unnecessary object allocation and unboxing overhead during numeric aggregation compared to the dedicated primitive stream types.",
+              "risk": "A hot numeric aggregation path pays for boxing every element instead of running as fast, allocation-free primitive arithmetic.",
+              "code": "Stream<Integer> nums = list.stream().map(Item::getQuantity);\nint total = nums.reduce(0, Integer::sum); // boxes every element",
+              "solution": "int total = list.stream()\n    .mapToInt(Item::getQuantity)\n    .sum(); // IntStream avoids boxing entirely",
+              "detectionPattern": "NO_CLEAN_REGEX: Stream<Integer>/Stream<Long>/Stream<Double> pipelines used purely for sum/average/min/max instead of mapToInt/mapToLong/mapToDouble."
+            },
+            {
+              "id": "JAVA-PERF-008",
+              "title": "Not setting initial capacity for collections with a known size",
+              "severity": "LOW",
+              "description": "Default collection capacities force repeated internal resizing and array copying as elements are added.",
+              "risk": "When the final size is known or estimable in advance, this is wasted work.",
+              "code": "List<String> results = new ArrayList<>(); // default capacity 10\nfor (Row row : hugeResultSet) { // e.g. 100,000 rows\n    results.add(row.toString()); // repeated resizes/copies as it grows\n}",
+              "solution": "List<String> results = new ArrayList<>(hugeResultSet.size());\nfor (Row row : hugeResultSet) {\n    results.add(row.toString());\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: new ArrayList<>()/new HashMap<>() with no capacity argument, immediately followed by a loop with a known or easily obtainable bound."
+            },
+            {
+              "id": "JAVA-PERF-009",
+              "title": "Using nested loops for lookups instead of building a Map for O(1) access",
+              "severity": "HIGH",
+              "description": "Searching one list inside a loop over another produces O(n*m) complexity.",
+              "risk": "Indexing the smaller collection into a Map up front turns repeated lookups into O(1) each.",
+              "code": "for (Order order : orders) {\n    for (Customer customer : customers) { // O(n*m)\n        if (customer.getId().equals(order.getCustomerId())) {\n            order.setCustomerName(customer.getName());\n        }\n    }\n}",
+              "solution": "Map<String, Customer> byId = customers.stream()\n    .collect(Collectors.toMap(Customer::getId, c -> c));\nfor (Order order : orders) {\n    order.setCustomerName(byId.get(order.getCustomerId()).getName()); // O(1) lookup\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Nested loops where the inner loop searches for a matching element by field comparison instead of using a pre-built Map/Set."
+            },
+            {
+              "id": "JAVA-PERF-010",
+              "title": "Using HashMap<EnumType, V> instead of EnumMap for enum-keyed maps",
+              "severity": "LOW",
+              "description": "EnumMap is implemented as a compact array indexed by enum ordinal, giving better performance and predictable (natural enum) iteration order compared to a general-purpose HashMap keyed by enum constants.",
+              "risk": "A map keyed by a small enum runs slower and iterates in an arbitrary order instead of the enum's natural declaration order, for no benefit over EnumMap.",
+              "code": "Map<Status, List<Order>> byStatus = new HashMap<>();\nfor (Order o : orders) {\n    byStatus.computeIfAbsent(o.getStatus(), k -> new ArrayList<>()).add(o);\n}",
+              "solution": "Map<Status, List<Order>> byStatus = new EnumMap<>(Status.class);\nfor (Order o : orders) {\n    byStatus.computeIfAbsent(o.getStatus(), k -> new ArrayList<>()).add(o);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: HashMap/TreeMap declared with an enum type as the key type parameter."
+            },
+            {
+              "id": "JAVA-PERF-011",
+              "title": "Using findFirst() on a parallel stream when order doesn't matter",
+              "severity": "LOW",
+              "description": "findFirst() must respect encounter order even on a parallel stream, which forces extra coordination overhead.",
+              "risk": "When any matching element is acceptable, findAny() lets the runtime return as soon as one is found, which is faster in parallel.",
+              "code": "Optional<Order> match = orders.parallelStream()\n    .filter(o -> o.getStatus() == Status.URGENT)\n    .findFirst(); // forces ordered coordination even though caller doesn't care which URGENT order it gets",
+              "solution": "Optional<Order> match = orders.parallelStream()\n    .filter(o -> o.getStatus() == Status.URGENT)\n    .findAny(); // no ordering constraint, faster in parallel\n// Use findFirst() only when a deterministic, encounter-order result is actually required",
+              "detectionPattern": "NO_CLEAN_REGEX: findFirst() used after parallelStream() where the surrounding code doesn't depend on which specific match is returned."
+            },
+            {
+              "id": "JAVA-PERF-012",
+              "title": "Filtering a stream twice instead of using Collectors.partitioningBy()",
+              "severity": "LOW",
+              "description": "Splitting a collection into two groups by a boolean predicate is commonly done with two separate filter() passes over the same source, which traverses the data twice when a single partitioningBy() collector does it in one pass.",
+              "risk": "The source collection is traversed twice to build two lists that a single partitioningBy() pass would produce from one traversal.",
+              "code": "List<Order> paid = orders.stream().filter(Order::isPaid).collect(Collectors.toList());\nList<Order> unpaid = orders.stream().filter(o -> !o.isPaid()).collect(Collectors.toList()); // two full traversals",
+              "solution": "Map<Boolean, List<Order>> partitioned = orders.stream()\n    .collect(Collectors.partitioningBy(Order::isPaid));\nList<Order> paid = partitioned.get(true);\nList<Order> unpaid = partitioned.get(false); // single traversal",
+              "detectionPattern": "NO_CLEAN_REGEX: Two filter()...collect() pipelines over the same source collection where the predicates are logical negations of each other."
+            },
+            {
+              "id": "JAVA-PERF-013",
+              "title": "Recomputing Collections.max()/min() or sorting inside a loop instead of precomputing once",
+              "severity": "MEDIUM",
+              "description": "Calling max()/min()/sort() on the same (or growing) collection repeatedly inside a loop is O(n) or O(n log n) per iteration, turning an otherwise linear algorithm into quadratic or worse.",
+              "risk": "An O(n) or O(n log n) computation that could run once instead re-runs on every loop iteration, turning a linear algorithm quadratic or worse.",
+              "code": "for (Order order : orders) {\n    Order biggest = Collections.max(allOrders, Comparator.comparing(Order::getTotal)); // recomputed every iteration\n    process(order, biggest);\n}",
+              "solution": "Order biggest = Collections.max(allOrders, Comparator.comparing(Order::getTotal)); // computed once\nfor (Order order : orders) {\n    process(order, biggest);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Collections.max()/min()/sort() or stream().sorted()/max()/min() called inside a loop body where the underlying collection doesn't change between iterations."
+            },
+            {
+              "id": "JAVA-PERF-014",
+              "title": "Not reordering stream operations for efficiency (sorting/mapping before filtering)",
+              "severity": "LOW",
+              "description": "Placing an expensive operation like sorted() or a costly map() before filter() forces it to run on every element, even ones that will be discarded.",
+              "risk": "Filtering first reduces the working set before the expensive step runs.",
+              "code": "list.stream()\n    .sorted(Comparator.comparing(Item::getExpensiveKey)) // sorts everything first\n    .filter(Item::isActive) // then throws most of it away\n    .collect(Collectors.toList());",
+              "solution": "list.stream()\n    .filter(Item::isActive) // shrink the working set first\n    .sorted(Comparator.comparing(Item::getExpensiveKey)) // sort only what remains\n    .collect(Collectors.toList());",
+              "detectionPattern": "NO_CLEAN_REGEX: Stream pipelines where sorted()/map() with an expensive function precedes a filter() that would have reduced the element count."
+            },
+            {
+              "id": "JAVA-PERF-015",
+              "title": "Making two separate stream passes to compute two aggregates instead of Collectors.teeing()",
+              "severity": "LOW",
+              "description": "Computing two different aggregates (e.g. sum and count, or min and max) by streaming the source collection twice does double the traversal work.",
+              "risk": "Collectors.teeing() (Java 12+) computes both in a single pass and merges the results.",
+              "code": "double total = orders.stream().mapToDouble(Order::getAmount).sum(); // pass 1\nlong count = orders.stream().count(); // pass 2 \u2014 same source traversed again",
+              "solution": "var result = orders.stream().collect(Collectors.teeing(\n    Collectors.summingDouble(Order::getAmount),\n    Collectors.counting(),\n    (sum, count) -> new AggregateResult(sum, count)\n)); // single pass",
+              "detectionPattern": "NO_CLEAN_REGEX: Two or more independent terminal operations invoked on separately-created streams from the same source collection within the same method."
+            },
+            {
+              "id": "JAVA-PERF-016",
+              "title": "Using HashSet<EnumType> instead of EnumSet for enum-based sets",
+              "severity": "LOW",
+              "description": "EnumSet is a bit-vector implementation specialized for enum types, giving much better performance and memory usage than a general-purpose HashSet, plus iteration in natural (declaration) order.",
+              "risk": "A small, fixed enum-backed set pays general-purpose HashSet overhead instead of EnumSet's compact bit-vector representation, with no corresponding benefit.",
+              "code": "Set<DayOfWeek> weekend = new HashSet<>();\nweekend.add(DayOfWeek.SATURDAY);\nweekend.add(DayOfWeek.SUNDAY);",
+              "solution": "Set<DayOfWeek> weekend = EnumSet.of(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY); // compact, fast, ordered",
+              "detectionPattern": "NO_CLEAN_REGEX: HashSet/TreeSet declared with an enum type parameter instead of EnumSet."
             }
           ]
         },
@@ -338,6 +478,76 @@
               "code": "public static final int STATUS_PENDING = 0;\npublic static final int STATUS_SHIPPED = 1;\n\nint status = 99; // compiles, meaningless",
               "solution": "public enum OrderStatus { PENDING, SHIPPED }\n\nOrderStatus status = OrderStatus.PENDING; // only valid values compile",
               "detectionPattern": "public\\s+static\\s+final\\s+int\\s+\\w*_[A-Z]+\\s*="
+            },
+            {
+              "id": "JAVA-GEN-002",
+              "title": "Comparator chains that throw NullPointerException on null fields",
+              "severity": "MEDIUM",
+              "description": "Comparator.comparing(Foo::getField) throws NPE the moment getField() returns null during a sort, instead of handling nulls explicitly with nullsFirst/nullsLast.",
+              "risk": "A sort that worked fine in testing throws NullPointerException in production the first time a real record has that field unset.",
+              "code": "list.sort(Comparator.comparing(Person::getMiddleName)); // NPE if any middleName is null",
+              "solution": "list.sort(Comparator.comparing(Person::getMiddleName,\n    Comparator.nullsFirst(Comparator.naturalOrder())));",
+              "detectionPattern": "NO_CLEAN_REGEX: Comparator.comparing() on a field/getter that is nullable, without nullsFirst/nullsLast wrapping."
+            },
+            {
+              "id": "JAVA-GEN-003",
+              "title": "Creating generic arrays via unsafe casts (new Object[] cast to T[])",
+              "severity": "MEDIUM",
+              "description": "Java forbids new T[] directly due to type erasure.",
+              "risk": "Developers work around this with an unchecked cast from Object[], which compiles with a warning but can throw ClassCastException later when the array is accessed as its erased type.",
+              "code": "class Box<T> {\n    @SuppressWarnings(\"unchecked\")\n    T[] createArray(int size) {\n        return (T[]) new Object[size]; // unsafe \u2014 actual runtime type is Object[]\n    }\n}\nString[] arr = box.createArray(5); // ClassCastException when assigned",
+              "solution": "class Box<T> {\n    T[] createArray(int size, Class<T> type) {\n        return (T[]) java.lang.reflect.Array.newInstance(type, size); // correct runtime component type\n    }\n}\n// Or prefer List<T> / ArrayList<T> over generic arrays entirely",
+              "detectionPattern": "NO_CLEAN_REGEX: @SuppressWarnings(\"unchecked\") near a cast of Object[] (or Object) to a generic array type T[]."
+            },
+            {
+              "id": "JAVA-GEN-004",
+              "title": "Calling Optional.get() without checking isPresent()/isEmpty() first",
+              "severity": "MEDIUM",
+              "description": "Optional.get() throws NoSuchElementException on an empty Optional, defeating the purpose of using Optional to avoid unchecked null-handling failures \u2014 it just moves the same class of bug to a different exception type.",
+              "risk": "Optional.get() throws NoSuchElementException on an empty Optional, moving the exact unguarded-absence failure Optional was meant to prevent into a different exception type.",
+              "code": "Optional<User> user = repository.findById(id);\nString name = user.get().getName(); // NoSuchElementException if not found",
+              "solution": "String name = repository.findById(id)\n    .map(User::getName)\n    .orElseThrow(() -> new UserNotFoundException(id));\n// Or .orElse(\"default\") / .orElseGet(...) depending on the desired fallback",
+              "detectionPattern": "NO_CLEAN_REGEX: Optional.get() calls not immediately preceded by an isPresent()/isEmpty() guard, or not replaced with map/orElse/orElseThrow/orElseGet chains."
+            },
+            {
+              "id": "JAVA-GEN-005",
+              "title": "Relying on unsafe array covariance, risking ArrayStoreException",
+              "severity": "MEDIUM",
+              "description": "Java arrays are covariant (String[] is-a Object[]) but that check is enforced at runtime, not compile time.",
+              "risk": "Storing an incompatible element through a supertype array reference compiles cleanly but throws ArrayStoreException at runtime.",
+              "code": "Object[] objects = new String[3]; // legal \u2014 array covariance\nobjects[0] = Integer.valueOf(42); // compiles, but throws ArrayStoreException at runtime",
+              "solution": "// Prefer generic collections, which catch this at compile time instead:\nList<Object> objects = new ArrayList<>(List.of(\"a\", \"b\")); // won't compile-accept an Integer into a List<String>\n// If arrays are required, avoid widening the reference type before writing to it",
+              "detectionPattern": "NO_CLEAN_REGEX: A supertype array reference (e.g. Object[]) assigned from a subtype array instance, later written to via that supertype reference."
+            },
+            {
+              "id": "JAVA-GEN-006",
+              "title": "Writing unbounded generic methods that require unsafe internal casts instead of adding proper bounds",
+              "severity": "MEDIUM",
+              "description": "A generic method that needs to compare or otherwise operate on its type parameter should declare a bound like <T extends Comparable<T>>.",
+              "risk": "Without it, the implementation resorts to unchecked casts or reflection to work around the missing capability.",
+              "code": "static <T> T max(T a, T b) {\n    return ((Comparable<T>) a).compareTo(b) > 0 ? a : b; // unchecked cast, breaks for non-Comparable T\n}",
+              "solution": "static <T extends Comparable<T>> T max(T a, T b) {\n    return a.compareTo(b) > 0 ? a : b; // compiler-enforced, no cast needed\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Generic methods with an unchecked cast of the type parameter to an interface (Comparable, Serializable, etc.) that could instead be expressed as a type bound."
+            },
+            {
+              "id": "JAVA-GEN-007",
+              "title": "Shadowing an outer class's type parameter with a nested class or method's own type parameter of the same name",
+              "severity": "MEDIUM",
+              "description": "Reusing a type parameter name like T in a nested class or generic method inside an already-generic outer class silently shadows the outer T, so code that intends to reference the outer class's type parameter actually binds to the unrelated inner one, defeating type checking without any compiler error.",
+              "risk": "A method or nested class believed to operate on the enclosing class's type parameter is silently working with an unrelated, unconstrained one instead, and the compiler gives no warning.",
+              "code": "class Container<T> {\n    <T> void process(T item) { // shadows outer T with a NEW, unrelated type parameter\n        // 'T' here has nothing to do with Container<T>\n    }\n}",
+              "solution": "class Container<T> {\n    void process(T item) { // correctly refers to the outer class's T\n        // ...\n    }\n    <U> void processOther(U item) { // distinct name avoids any ambiguity\n        // ...\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: A generic method or nested class declaring a type parameter with the exact same name as an enclosing generic class's type parameter."
+            },
+            {
+              "id": "JAVA-GEN-008",
+              "title": "Using raw generic types when interacting with legacy APIs instead of re-establishing type safety at the boundary",
+              "severity": "MEDIUM",
+              "description": "Pre-generics legacy libraries or reflection-based code often return raw types (e.g. raw List, Map).",
+              "risk": "Passing that raw reference around unchanged propagates the loss of type safety through the rest of the codebase instead of validating and re-typing it once at the boundary.",
+              "code": "List legacyResults = legacyApi.fetchData(); // raw type from an old library\nprocessResults(legacyResults); // raw type propagates, no compiler help anywhere downstream",
+              "solution": "List<?> legacyResults = legacyApi.fetchData();\nList<String> typed = legacyResults.stream()\n    .map(String.class::cast) // explicit, localized cast with a clear failure point\n    .collect(Collectors.toList());\nprocessResults(typed); // type safety restored from here on",
+              "detectionPattern": "NO_CLEAN_REGEX: Raw-typed variables (List, Map, Set with no generic parameter) originating from a legacy or reflection-based call, passed to more than one downstream method unchanged."
             }
           ]
         },
@@ -475,7 +685,7 @@
               "id": "JAVA-DESIGN-011",
               "title": "Calling System.exit() from library or business logic",
               "severity": "HIGH",
-              "description": "System.exit() terminates the entire JVM immediately — not just the current request or operation. In a server, container, or test runner, that takes down every other in-flight request with it.",
+              "description": "System.exit() terminates the entire JVM immediately \u2014 not just the current request or operation. In a server, container, or test runner, that takes down every other in-flight request with it.",
               "risk": "A single invalid-config check in a rarely-used code path kills the whole running application (or test suite) instead of just failing the one operation that hit it.",
               "code": "if (configInvalid) {\n    System.exit(1);\n}",
               "solution": "if (configInvalid) {\n    throw new IllegalStateException(\"Invalid configuration\");\n}",
@@ -485,7 +695,7 @@
               "id": "JAVA-DESIGN-012",
               "title": "Relying on the order of static initialization blocks",
               "severity": "MEDIUM",
-              "description": "Static field/block initialization order depends on declaration order within the class and load order across classes — easy to get subtly wrong and hard to see just by reading one class.",
+              "description": "Static field/block initialization order depends on declaration order within the class and load order across classes \u2014 easy to get subtly wrong and hard to see just by reading one class.",
               "risk": "Reordering two unrelated-looking static declarations (or splitting a class into two files) silently changes which value a static field ends up with, with no compiler warning.",
               "code": "public class Config {\n    static {\n        VALUE = load();  // depends on another static field's init order\n    }\n    private static final int VALUE;\n}",
               "solution": "// Keep static initialization simple and independent, or use lazy/explicit\n// initialization instead of interdependent static blocks.",
@@ -537,11 +747,271 @@
               "id": "JAVA-COLL-003",
               "title": "Mutating an object after it's used as a Set element or Map key",
               "severity": "HIGH",
-              "description": "HashSet/HashMap place an element by its hashCode() at insertion time. Changing a field that hashCode() depends on afterward moves the object logically, but not physically — it's now in the wrong bucket.",
+              "description": "HashSet/HashMap place an element by its hashCode() at insertion time. Changing a field that hashCode() depends on afterward moves the object logically, but not physically \u2014 it's now in the wrong bucket.",
               "risk": "contains()/get() on the exact same object reference returns false/null after the mutation, because the hash-based lookup checks the new (changed) bucket while the entry still lives in the old one.",
-              "code": "Set<Person> set = new HashSet<>();\nPerson p = new Person(\"Alice\");\nset.add(p);\np.setName(\"Bob\");  // hashCode changes — entry is now \"lost\"",
+              "code": "Set<Person> set = new HashSet<>();\nPerson p = new Person(\"Alice\");\nset.add(p);\np.setName(\"Bob\");  // hashCode changes \u2014 entry is now \"lost\"",
               "solution": "// Prefer immutable objects (or records) as Set elements / Map keys,\n// so there's no setter that could invalidate the hash after insertion.",
               "detectionPattern": "NO_CLEAN_REGEX: an object added to a HashSet/HashMap has a setter called on it afterward"
+            },
+            {
+              "id": "JAVA-COLL-004",
+              "title": "Mutating a list returned by Arrays.asList()",
+              "severity": "MEDIUM",
+              "description": "Arrays.asList() returns a fixed-size list backed by the array.",
+              "risk": "Calling add(), remove(), or clear() throws UnsupportedOperationException at runtime, not compile time.",
+              "code": "List<String> names = Arrays.asList(\"a\", \"b\", \"c\");\nnames.add(\"d\"); // throws UnsupportedOperationException",
+              "solution": "List<String> names = new ArrayList<>(Arrays.asList(\"a\", \"b\", \"c\"));\nnames.add(\"d\"); // works\n// Or: List<String> names = new ArrayList<>(List.of(\"a\", \"b\", \"c\"));",
+              "detectionPattern": "NO_CLEAN_REGEX: Result of Arrays.asList(...) passed around and later mutated, especially several calls away from where it was created."
+            },
+            {
+              "id": "JAVA-COLL-005",
+              "title": "Mutating immutable collections from List.of()/Map.of()/Set.of()",
+              "severity": "MEDIUM",
+              "description": "Factory methods List.of(), Map.of(), and Set.of() (Java 9+) return truly immutable collections.",
+              "risk": "Any mutation attempt throws UnsupportedOperationException, unlike Collections.unmodifiableList wrapping a still-mutable backing list.",
+              "code": "List<String> items = List.of(\"a\", \"b\");\nitems.set(0, \"z\"); // throws UnsupportedOperationException",
+              "solution": "List<String> items = new ArrayList<>(List.of(\"a\", \"b\"));\nitems.set(0, \"z\"); // works on the mutable copy\n// Keep List.of()/Map.of() only where immutability is actually desired",
+              "detectionPattern": "NO_CLEAN_REGEX: Calls to .of() factory methods whose result is later passed to code that adds/removes/sets elements."
+            },
+            {
+              "id": "JAVA-COLL-006",
+              "title": "Using HashMap when insertion or access order matters",
+              "severity": "MEDIUM",
+              "description": "HashMap makes no guarantee about iteration order, which can change across JVM versions or even between runs.",
+              "risk": "Code that implicitly depends on insertion or sorted order will behave inconsistently.",
+              "code": "Map<String, Integer> scores = new HashMap<>();\nscores.put(\"first\", 1);\nscores.put(\"second\", 2);\nfor (var e : scores.entrySet()) { render(e); } // order not guaranteed to be insertion order",
+              "solution": "Map<String, Integer> scores = new LinkedHashMap<>(); // preserves insertion order\n// or: new TreeMap<>() when sorted-key order is required",
+              "detectionPattern": "NO_CLEAN_REGEX: HashMap used where output/iteration order is visible to the user or asserted on in tests, without an explicit ordering requirement being met."
+            },
+            {
+              "id": "JAVA-COLL-007",
+              "title": "Relying on List/Set.contains() for custom objects without overriding equals()/hashCode()",
+              "severity": "HIGH",
+              "description": "contains(), indexOf(), and remove() on collections use equals() (and hashCode() for hash-based collections) to find a match.",
+              "risk": "Without a correct override, lookups silently fail even though an 'equal' element is logically present.",
+              "code": "class Point { int x, y; Point(int x, int y) { this.x = x; this.y = y; } }\nList<Point> points = new ArrayList<>();\npoints.add(new Point(1, 2));\npoints.contains(new Point(1, 2)); // false \u2014 uses default Object.equals (reference equality)",
+              "solution": "class Point {\n    int x, y;\n    @Override public boolean equals(Object o) {\n        if (!(o instanceof Point p)) return false;\n        return x == p.x && y == p.y;\n    }\n    @Override public int hashCode() { return Objects.hash(x, y); }\n}\npoints.contains(new Point(1, 2)); // true",
+              "detectionPattern": "NO_CLEAN_REGEX: Custom classes stored in List/Set/Map and later looked up with contains()/indexOf()/remove() that don't override equals()/hashCode()."
+            },
+            {
+              "id": "JAVA-COLL-008",
+              "title": "Calling Collections.sort() directly on a list obtained from an unmodifiable/immutable source",
+              "severity": "MEDIUM",
+              "description": "Collections.sort() sorts in place.",
+              "risk": "Calling it on a list backed by an unmodifiable wrapper or an immutable factory result (List.of(), Collections.unmodifiableList()) throws UnsupportedOperationException.",
+              "code": "List<String> names = Collections.unmodifiableList(source);\nCollections.sort(names); // throws UnsupportedOperationException",
+              "solution": "List<String> sorted = new ArrayList<>(names);\nCollections.sort(sorted); // sorts the mutable copy\n// Or: List<String> sorted = names.stream().sorted().toList();",
+              "detectionPattern": "NO_CLEAN_REGEX: Collections.sort()/list.sort() called on a variable assigned from List.of(), Collections.unmodifiableList(), or a method known to return an immutable view."
+            },
+            {
+              "id": "JAVA-COLL-009",
+              "title": "Ambiguity between List.remove(int index) and List.remove(Object) with boxed Integer",
+              "severity": "HIGH",
+              "description": "List<Integer> has two overloads: remove(int index) removes by position, remove(Object o) removes by value.",
+              "risk": "Passing a primitive int silently calls the index overload even when the intent was to remove a value, deleting the wrong element.",
+              "code": "List<Integer> nums = new ArrayList<>(List.of(10, 20, 30));\nnums.remove(20); // removes element at INDEX 20 -> IndexOutOfBoundsException, or worse, removes wrong index if list is large",
+              "solution": "List<Integer> nums = new ArrayList<>(List.of(10, 20, 30));\nnums.remove(Integer.valueOf(20)); // removes the VALUE 20\n// Or: nums.remove((Integer) 20);",
+              "detectionPattern": "NO_CLEAN_REGEX: list.remove(intLiteralOrVariable) calls on a List<Integer>/List<Long> where the intent (by reading context) is to remove a value, not a position."
+            },
+            {
+              "id": "JAVA-COLL-010",
+              "title": "Assuming Collections.unmodifiableList() provides deep immutability",
+              "severity": "MEDIUM",
+              "description": "Collections.unmodifiableList() (and List.of()) only prevents structural changes to the list itself (add/remove/set).",
+              "risk": "The elements inside remain fully mutable if their own class exposes setters, so 'read-only' callers can still corrupt shared state.",
+              "code": "List<Order> readOnly = Collections.unmodifiableList(orders);\nreadOnly.get(0).setStatus(\"CANCELLED\"); // compiles fine, mutates the shared Order object",
+              "solution": "List<Order> readOnly = orders.stream()\n    .map(Order::copy) // defensive copy, or use an immutable record/value type\n    .collect(Collectors.toUnmodifiableList());\nreadOnly.get(0).setStatus(\"CANCELLED\"); // compile error if Order is immutable",
+              "detectionPattern": "NO_CLEAN_REGEX: Collections.unmodifiableList()/List.of() results whose element type is mutable (has public setters) and is passed to untrusted or external code."
+            },
+            {
+              "id": "JAVA-COLL-011",
+              "title": "Using a Comparator in TreeMap/TreeSet that is inconsistent with equals()",
+              "severity": "HIGH",
+              "description": "TreeMap/TreeSet use their Comparator (not equals()) to decide whether two elements are 'the same'.",
+              "risk": "If the comparator considers two logically distinct objects equal (returns 0), one silently overwrites or excludes the other.",
+              "code": "TreeSet<Person> set = new TreeSet<>(Comparator.comparing(Person::getAge));\nset.add(new Person(\"Alice\", 30));\nset.add(new Person(\"Bob\", 30)); // dropped! comparator says compare == 0, treated as duplicate",
+              "solution": "TreeSet<Person> set = new TreeSet<>(\n    Comparator.comparing(Person::getAge).thenComparing(Person::getName));\n// Now Alice(30) and Bob(30) are correctly treated as distinct entries",
+              "detectionPattern": "NO_CLEAN_REGEX: TreeMap/TreeSet constructed with a Comparator that only compares a subset of fields that don't uniquely identify distinct objects."
+            },
+            {
+              "id": "JAVA-COLL-012",
+              "title": "Calling Iterator.next() without a matching hasNext() check",
+              "severity": "MEDIUM",
+              "description": "Manually driving an Iterator by calling next() more times than there are elements throws NoSuchElementException.",
+              "risk": "This is easy to introduce when refactoring a for-each loop into a manual while loop incorrectly.",
+              "code": "Iterator<String> it = list.iterator();\nwhile (true) {\n    String s = it.next(); // no hasNext() guard \u2014 throws once exhausted\n    if (s == null) break;\n}",
+              "solution": "Iterator<String> it = list.iterator();\nwhile (it.hasNext()) {\n    String s = it.next();\n    process(s);\n}\n// Or simply use a for-each loop when removal during iteration isn't needed",
+              "detectionPattern": "NO_CLEAN_REGEX: Manual Iterator.next() calls inside a loop whose condition doesn't call hasNext() on the same iterator."
+            },
+            {
+              "id": "JAVA-COLL-013",
+              "title": "Assuming PriorityQueue's iterator returns elements in priority order",
+              "severity": "MEDIUM",
+              "description": "PriorityQueue only guarantees that peek()/poll() return the smallest (or highest-priority) element.",
+              "risk": "Its iterator() traverses the internal heap array in an unspecified order, not sorted order.",
+              "code": "PriorityQueue<Integer> pq = new PriorityQueue<>(List.of(5, 1, 3));\nfor (int n : pq) {\n    System.out.println(n); // NOT guaranteed to print 1, 3, 5 in order\n}",
+              "solution": "PriorityQueue<Integer> pq = new PriorityQueue<>(List.of(5, 1, 3));\nwhile (!pq.isEmpty()) {\n    System.out.println(pq.poll()); // guaranteed sorted extraction: 1, 3, 5\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: for-each or iterator() usage on a PriorityQueue where the code expects sorted output, instead of repeated poll()/peek()."
+            },
+            {
+              "id": "JAVA-COLL-014",
+              "title": "Treating ArrayList.subList() as an independent copy instead of a live view",
+              "severity": "MEDIUM",
+              "description": "subList() returns a view backed by the original list.",
+              "risk": "Structural changes to either the sublist or the original list (other than through the sublist itself) throw ConcurrentModificationException on subsequent access.",
+              "code": "List<String> all = new ArrayList<>(List.of(\"a\", \"b\", \"c\", \"d\"));\nList<String> view = all.subList(1, 3);\nall.add(\"e\"); // structural change to the backing list\nview.get(0); // throws ConcurrentModificationException",
+              "solution": "List<String> all = new ArrayList<>(List.of(\"a\", \"b\", \"c\", \"d\"));\nList<String> independentCopy = new ArrayList<>(all.subList(1, 3)); // detach from the view\nall.add(\"e\"); // safe, copy is unaffected",
+              "detectionPattern": "NO_CLEAN_REGEX: subList() result stored in a variable and used after further structural modifications to the original list, without wrapping subList() in new ArrayList<>()."
+            },
+            {
+              "id": "JAVA-COLL-015",
+              "title": "Implementing an LRU cache with LinkedHashMap but forgetting accessOrder=true",
+              "severity": "MEDIUM",
+              "description": "LinkedHashMap defaults to insertion order.",
+              "risk": "An LRU cache needs access order so that reads (get()) move an entry to the most-recently-used position \u2014 without the accessOrder constructor flag and a removeEldestEntry() override, eviction logic silently removes the wrong entries.",
+              "code": "Map<String, Object> cache = new LinkedHashMap<>(16, 0.75f, false); // insertion order \u2014 wrong for LRU\n// eviction based on this order removes the oldest-inserted entry, not the least-recently-used one",
+              "solution": "Map<String, Object> cache = new LinkedHashMap<>(16, 0.75f, true) { // accessOrder = true\n    @Override\n    protected boolean removeEldestEntry(Map.Entry<String, Object> eldest) {\n        return size() > MAX_ENTRIES;\n    }\n};",
+              "detectionPattern": "NO_CLEAN_REGEX: LinkedHashMap constructed for caching purposes without the three-argument constructor and accessOrder=true, or without overriding removeEldestEntry()."
+            },
+            {
+              "id": "JAVA-COLL-016",
+              "title": "Inserting null elements/keys into TreeSet, TreeMap, or ConcurrentHashMap",
+              "severity": "MEDIUM",
+              "description": "TreeSet/TreeMap need to compare elements to place them, so a null throws NullPointerException immediately on insertion.",
+              "risk": "ConcurrentHashMap explicitly disallows null keys and values to avoid ambiguity between 'absent' and 'mapped to null'. Code written against HashMap (which permits nulls) breaks when swapped to these types.",
+              "code": "Map<String, String> map = new ConcurrentHashMap<>();\nmap.put(\"key\", null); // throws NullPointerException \u2014 silently worked with HashMap",
+              "solution": "Map<String, String> map = new ConcurrentHashMap<>();\nmap.put(\"key\", Optional.ofNullable(value).orElse(\"\"));\n// Or use a sentinel value / Optional<V>, and document that nulls are never stored",
+              "detectionPattern": "NO_CLEAN_REGEX: Code migrating from HashMap/HashSet to TreeMap/TreeSet/ConcurrentHashMap/ConcurrentSkipListMap without auditing for possible null keys or values."
+            },
+            {
+              "id": "JAVA-COLL-017",
+              "title": "Filling a collection of collections with the same mutable reference (e.g. Collections.nCopies or a reused row)",
+              "severity": "HIGH",
+              "description": "Collections.nCopies() and naive loop patterns that reuse one mutable object reference across multiple slots make every slot point to the same object.",
+              "risk": "Mutating one 'copy' mutates all of them, since no independent instances were ever created.",
+              "code": "List<Integer> row = new ArrayList<>(Collections.nCopies(3, 0));\nList<List<Integer>> grid = new ArrayList<>(Collections.nCopies(3, row)); // all 3 rows are the SAME list instance\ngrid.get(0).set(0, 9); // mutates every row",
+              "solution": "List<List<Integer>> grid = new ArrayList<>();\nfor (int i = 0; i < 3; i++) {\n    grid.add(new ArrayList<>(Collections.nCopies(3, 0))); // independent instance per row\n}\ngrid.get(0).set(0, 9); // only affects row 0",
+              "detectionPattern": "NO_CLEAN_REGEX: Collections.nCopies() (or a loop that adds the same variable reference repeatedly) used to build a collection of mutable objects, especially nested lists/arrays."
+            },
+            {
+              "id": "JAVA-COLL-018",
+              "title": "Assuming ArrayList.clone() performs a deep copy",
+              "severity": "MEDIUM",
+              "description": "List/Collection clone() methods (where available) perform a shallow copy \u2014 a new list is created, but the elements themselves are the same references as in the original, so mutating a shared element affects both lists.",
+              "risk": "Mutating an element through the supposedly independent cloned list silently mutates the same shared object still referenced by the original list.",
+              "code": "ArrayList<Order> copy = (ArrayList<Order>) original.clone();\ncopy.get(0).setStatus(\"CANCELLED\"); // mutates the SAME Order object referenced by 'original'",
+              "solution": "List<Order> copy = original.stream()\n    .map(Order::copy) // explicit deep-copy method on Order\n    .collect(Collectors.toList());\ncopy.get(0).setStatus(\"CANCELLED\"); // original is unaffected",
+              "detectionPattern": "NO_CLEAN_REGEX: .clone() called on a List/Collection of mutable elements, followed by mutation of an element through the cloned reference."
+            },
+            {
+              "id": "JAVA-COLL-019",
+              "title": "Calling Iterator.remove() before calling next()",
+              "severity": "LOW",
+              "description": "Iterator.remove() removes the element most recently returned by next().",
+              "risk": "Calling it before next() has been invoked at all (or twice in a row without an intervening next()) throws IllegalStateException.",
+              "code": "Iterator<String> it = list.iterator();\nit.remove(); // IllegalStateException \u2014 next() was never called",
+              "solution": "Iterator<String> it = list.iterator();\nwhile (it.hasNext()) {\n    String s = it.next();\n    if (shouldRemove(s)) {\n        it.remove(); // valid \u2014 called exactly once after next()\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Iterator.remove() calls not immediately preceded (in the same loop iteration) by exactly one next() call on the same iterator."
+            },
+            {
+              "id": "JAVA-COLL-020",
+              "title": "Using a List where uniqueness is a business requirement, allowing silent duplicate entries",
+              "severity": "MEDIUM",
+              "description": "When the domain rule is 'no duplicates', storing elements in a List relies on every call site remembering to check for duplicates manually.",
+              "risk": "A Set enforces the invariant structurally so a duplicate simply can't be added.",
+              "code": "List<String> subscribedEmails = new ArrayList<>();\nvoid subscribe(String email) {\n    subscribedEmails.add(email); // nothing stops the same email being added twice\n}",
+              "solution": "Set<String> subscribedEmails = new LinkedHashSet<>(); // uniqueness enforced, insertion order preserved\nvoid subscribe(String email) {\n    subscribedEmails.add(email); // duplicate adds are silently no-ops\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: List fields/variables whose business meaning implies uniqueness (e.g. 'subscribers', 'tags', 'ids') with no duplicate-checking logic at the point of insertion."
+            },
+            {
+              "id": "JAVA-COLL-021",
+              "title": "Using toArray(new T[size]) with a stale or incorrect size instead of toArray(new T[0])",
+              "severity": "LOW",
+              "description": "Passing a pre-sized array to toArray() that doesn't match the collection's current size either gets padded with a trailing null (if too large) or forces a fresh internal allocation anyway (if too small).",
+              "risk": "ToArray(new T[0]) always lets the JVM allocate exactly the right size and is the recommended idiom.",
+              "code": "String[] arr = list.toArray(new String[10]); // if list has 7 elements, arr[7..9] are null; if list grew since 10 was chosen, silently wrong",
+              "solution": "String[] arr = list.toArray(new String[0]); // always correctly sized, and JIT-optimized to be as fast as a pre-sized array",
+              "detectionPattern": "NO_CLEAN_REGEX: toArray(new T[N]) calls where N is a hardcoded or previously-cached size rather than 0 or list.size()."
+            },
+            {
+              "id": "JAVA-COLL-022",
+              "title": "Calling map.remove()/put() inside forEach() over the same map",
+              "severity": "HIGH",
+              "description": "Map.forEach() (like other internal iteration methods) does not tolerate structural modification of the map during traversal.",
+              "risk": "Adding or removing entries from within the lambda throws ConcurrentModificationException just as it would in a for-each loop.",
+              "code": "map.forEach((key, value) -> {\n    if (value.isExpired()) {\n        map.remove(key); // ConcurrentModificationException\n    }\n});",
+              "solution": "map.entrySet().removeIf(entry -> entry.getValue().isExpired()); // safe, designed for in-place removal\n// Or collect keys to remove first, then remove them in a separate pass",
+              "detectionPattern": "NO_CLEAN_REGEX: map.remove()/put()/clear() called on the same map instance from within its own forEach()/for-each iteration lambda."
+            },
+            {
+              "id": "JAVA-COLL-023",
+              "title": "Assuming Collections.synchronizedMap() makes compound operations atomic",
+              "severity": "HIGH",
+              "description": "synchronizedMap() only synchronizes individual method calls (get, put, etc.).",
+              "risk": "A sequence like get-check-put or size-then-modify is not atomic, so races between threads can still corrupt state even though every single call is thread-safe in isolation.",
+              "code": "Map<String, Integer> counts = Collections.synchronizedMap(new HashMap<>());\nInteger current = counts.get(key); // call 1 \u2014 thread-safe alone\ncounts.put(key, (current == null ? 0 : current) + 1); // call 2 \u2014 another thread can interleave here",
+              "solution": "ConcurrentHashMap<String, Integer> counts = new ConcurrentHashMap<>();\ncounts.merge(key, 1, Integer::sum); // single atomic compound operation",
+              "detectionPattern": "NO_CLEAN_REGEX: Multiple sequential calls (get then put, containsKey then put, size then modify) on a Collections.synchronizedXxx() collection, treated as if the sequence itself were atomic."
+            },
+            {
+              "id": "JAVA-COLL-024",
+              "title": "Recursing over deeply nested collections without a depth or stack-safety check",
+              "severity": "MEDIUM",
+              "description": "Recursive traversal of arbitrarily deep nested structures (trees, nested lists/maps from JSON, category hierarchies) can exhaust the call stack with a StackOverflowError on unexpectedly deep or malicious input, where an iterative approach with an explicit stack would degrade gracefully.",
+              "risk": "Sufficiently deep or adversarial input (nested JSON, a crafted category tree) crashes the whole request with a StackOverflowError instead of failing gracefully.",
+              "code": "void flatten(List<Object> nested, List<Object> out) {\n    for (Object o : nested) {\n        if (o instanceof List<?> inner) {\n            flatten((List<Object>) inner, out); // unbounded recursion depth\n        } else {\n            out.add(o);\n        }\n    }\n}",
+              "solution": "void flatten(List<Object> nested, List<Object> out) {\n    Deque<Object> stack = new ArrayDeque<>(nested);\n    while (!stack.isEmpty()) {\n        Object o = stack.pop();\n        if (o instanceof List<?> inner) {\n            inner.forEach(stack::push); // explicit stack, no JVM call-stack growth\n        } else {\n            out.add(o);\n        }\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Recursive methods traversing structures whose depth is determined by external/untrusted input (JSON, XML, user-defined hierarchies) with no depth limit."
+            },
+            {
+              "id": "JAVA-COLL-025",
+              "title": "Mixing stack semantics (push/pop) and queue semantics (offer/poll) on the same Deque instance",
+              "severity": "MEDIUM",
+              "description": "Deque supports both stack (push/pop/peek operate on the head) and queue (offer/poll operate on the tail-in/head-out) usage patterns.",
+              "risk": "Using both styles interchangeably on one instance produces confusing, order-dependent bugs because push() and offer() insert at opposite ends.",
+              "code": "Deque<Task> tasks = new ArrayDeque<>();\ntasks.push(taskA); // inserts at head\ntasks.offer(taskB); // inserts at TAIL \u2014 inconsistent with push semantics\nTask next = tasks.pop(); // removes from head \u2014 may not be the order the caller expects",
+              "solution": "// Pick one semantic and stick to it:\nDeque<Task> stack = new ArrayDeque<>();\nstack.push(taskA); stack.push(taskB); // consistent LIFO via push/pop\n// or:\nDeque<Task> queue = new ArrayDeque<>();\nqueue.offer(taskA); queue.offer(taskB); // consistent FIFO via offer/poll",
+              "detectionPattern": "NO_CLEAN_REGEX: The same Deque variable receiving both push()/pop() calls and offer()/poll() calls within the same class or method."
+            },
+            {
+              "id": "JAVA-COLL-026",
+              "title": "Assuming List.copyOf() behaves exactly like Collections.unmodifiableList()",
+              "severity": "MEDIUM",
+              "description": "List.copyOf() (Java 10+) creates a genuinely independent immutable copy and throws NullPointerException if any element is null.",
+              "risk": "Collections.unmodifiableList() merely wraps the original (still tolerating nulls and reflecting later changes to the source), so swapping between them without checking null-safety breaks previously-working code.",
+              "code": "List<String> source = new ArrayList<>();\nsource.add(null);\nList<String> copy = List.copyOf(source); // throws NullPointerException \u2014 unexpected if migrating from unmodifiableList()",
+              "solution": "List<String> copy = source.stream().anyMatch(Objects::isNull)\n    ? Collections.unmodifiableList(new ArrayList<>(source)) // tolerate nulls if that's intentional\n    : List.copyOf(source); // use when nulls are genuinely disallowed",
+              "detectionPattern": "NO_CLEAN_REGEX: Migrations from Collections.unmodifiableList()/unmodifiableSet() to List.copyOf()/Set.copyOf() without auditing the source for possible null elements."
+            },
+            {
+              "id": "JAVA-COLL-027",
+              "title": "Inconsistent Objects.requireNonNull() usage allowing partially-null domain objects into collections",
+              "severity": "MEDIUM",
+              "description": "Validating some constructor parameters with requireNonNull() but not others lets objects with unexpected null fields slip into lists/maps, where the null surfaces much later (e.g.",
+              "risk": "during a sort, a hashCode computation, or a stream operation) far from its true origin, making the failure hard to trace.",
+              "code": "class Order {\n    Order(String id, String customerId, BigDecimal amount) {\n        this.id = Objects.requireNonNull(id);\n        this.customerId = customerId; // not validated \u2014 can be null\n        this.amount = amount; // not validated \u2014 can be null\n    }\n}",
+              "solution": "class Order {\n    Order(String id, String customerId, BigDecimal amount) {\n        this.id = Objects.requireNonNull(id, \"id\");\n        this.customerId = Objects.requireNonNull(customerId, \"customerId\");\n        this.amount = Objects.requireNonNull(amount, \"amount\");\n    }\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Constructors validating some but not all reference-type parameters with requireNonNull(), especially on classes stored in collections."
+            },
+            {
+              "id": "JAVA-COLL-028",
+              "title": "Continuing to mutate a builder after adding its built result to a collection",
+              "severity": "HIGH",
+              "description": "If a builder's build() method returns a live reference to its internal mutable state rather than a defensive copy, reusing the same builder instance for the next entry retroactively corrupts every previously-built object already stored in the collection.",
+              "risk": "Reusing one builder instance across a loop retroactively corrupts every previously-built object already added to the collection, if build() doesn't defensively copy its state.",
+              "code": "OrderBuilder builder = new OrderBuilder();\nList<Order> orders = new ArrayList<>();\nfor (String id : ids) {\n    builder.setId(id);\n    orders.add(builder.build()); // if build() doesn't copy, all entries end up sharing the SAME mutable state\n}",
+              "solution": "for (String id : ids) {\n    OrderBuilder builder = new OrderBuilder(); // fresh builder per entry\n    builder.setId(id);\n    orders.add(builder.build());\n}\n// Or ensure build() returns a fully independent, immutable Order instance",
+              "detectionPattern": "NO_CLEAN_REGEX: A single builder instance reused across loop iterations where build() is documented (or observed) to return a mutable, non-copied result."
+            },
+            {
+              "id": "JAVA-COLL-029",
+              "title": "Not documenting or enforcing the thread-safety of a returned collection",
+              "severity": "MEDIUM",
+              "description": "A method that returns a collection without stating (in Javadoc or its type) whether it's safe for concurrent access forces every caller to guess.",
+              "risk": "Callers who assume thread-safety when there is none introduce silent race conditions, while callers who over-synchronize a genuinely safe collection add needless contention.",
+              "code": "/**\n * @return the current active sessions\n */\npublic Collection<Session> getActiveSessions() {\n    return activeSessions; // is this a ConcurrentHashMap.values()? a plain HashMap? undocumented\n}",
+              "solution": "/**\n * @return an immutable, thread-safe snapshot of active sessions at the time of the call.\n *         Safe to iterate from any thread without external synchronization.\n */\npublic Collection<Session> getActiveSessions() {\n    return List.copyOf(activeSessions.values());\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Public methods returning a collection field directly, with no Javadoc statement about thread-safety and no indication in the return type (e.g. an unqualified Collection/List/Map)."
             }
           ]
         },
@@ -608,6 +1078,36 @@
               "code": "public class InvalidQuantityException extends RuntimeException {\n    public InvalidQuantityException(String msg) { super(msg); }\n}\n\nif (quantity < 0) {\n    throw new InvalidQuantityException(\"quantity must be non-negative\");\n}",
               "solution": "if (quantity < 0) {\n    throw new IllegalArgumentException(\"quantity must be non-negative: \" + quantity);\n}",
               "detectionPattern": "class\\s+\\w*Exception\\s+extends\\s+(RuntimeException|Exception)"
+            },
+            {
+              "id": "JAVA-API-008",
+              "title": "Ignoring the PECS principle (Producer-Extends, Consumer-Super) with bounded wildcards",
+              "severity": "LOW",
+              "description": "Using an unbounded or wrongly-bounded generic type where a wildcard is needed makes APIs unnecessarily rigid \u2014 callers can't pass a List<Integer> to a method expecting List<Number>, even though that should be safe for a read-only producer.",
+              "risk": "A caller holding a List<Integer> can't pass it to a method that should logically accept it for read-only use (one expecting List<Number>), forcing an unnecessary copy or a more permissive, less safe signature.",
+              "code": "void printAll(List<Number> list) { for (Number n : list) System.out.println(n); }\nList<Integer> ints = List.of(1, 2, 3);\nprintAll(ints); // compile error \u2014 List<Integer> is not a List<Number>",
+              "solution": "void printAll(List<? extends Number> list) { // producer: use extends\n    for (Number n : list) System.out.println(n);\n}\nprintAll(ints); // now compiles",
+              "detectionPattern": "NO_CLEAN_REGEX: Generic method parameters typed as List<T>/Collection<T> that only read (producer) or only write (consumer) from the collection, without ? extends / ? super where flexibility is needed."
+            },
+            {
+              "id": "JAVA-API-009",
+              "title": "Not using Collectors.toUnmodifiableList()/toUnmodifiableSet()/toUnmodifiableMap() when the result should never be mutated",
+              "severity": "LOW",
+              "description": "Collectors.toList()/toSet()/toMap() return mutable collections by contract.",
+              "risk": "If a method's result is meant to be a read-only view, failing to make that explicit lets callers mutate internal state unexpectedly.",
+              "code": "public List<String> getActiveNames() {\n    return items.stream()\n        .filter(Item::isActive)\n        .map(Item::getName)\n        .collect(Collectors.toList()); // caller can mutate this freely\n}",
+              "solution": "public List<String> getActiveNames() {\n    return items.stream()\n        .filter(Item::isActive)\n        .map(Item::getName)\n        .collect(Collectors.toUnmodifiableList()); // or .toList() (Java 16+)\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Public getter-style methods returning Collectors.toList()/toSet()/toMap() results that represent a snapshot or internal view not meant to be mutated by callers."
+            },
+            {
+              "id": "JAVA-API-010",
+              "title": "Returning Optional<List<T>>/Optional<Collection<T>> instead of an empty collection",
+              "severity": "LOW",
+              "description": "Wrapping a collection in Optional adds an unnecessary layer of null-handling ceremony on top of a type that already has a natural 'empty' representation, forcing every caller to unwrap before even checking for emptiness.",
+              "risk": "Every caller has to unwrap the Optional before it can even check whether the list is empty, adding ceremony a plain empty list would never have required.",
+              "code": "public Optional<List<Order>> findOrders(String customerId) {\n    List<Order> found = repo.query(customerId);\n    return found.isEmpty() ? Optional.empty() : Optional.of(found);\n}\n// caller: orders.orElse(Collections.emptyList()).size() -- extra unwrap for no benefit",
+              "solution": "public List<Order> findOrders(String customerId) {\n    return repo.query(customerId); // naturally empty if nothing found\n}\n// caller: findOrders(id).size() -- no unwrapping needed",
+              "detectionPattern": "NO_CLEAN_REGEX: Method signatures returning Optional<List<...>>, Optional<Set<...>>, Optional<Map<...>>, or any Optional-wrapped collection type."
             }
           ]
         },
@@ -624,6 +1124,16 @@
               "code": "public Object pop() {\n    return elements[--size]; // the popped slot still references the object\n}",
               "solution": "public Object pop() {\n    Object result = elements[--size];\n    elements[size] = null; // let the GC reclaim it\n    return result;\n}",
               "detectionPattern": "NO_CLEAN_REGEX: manual array-backed collection whose remove/pop doesn't null out the vacated slot"
+            },
+            {
+              "id": "JAVA-MEM-002",
+              "title": "Ignoring ArrayList's capacity growth after a large temporary spike, causing lingering memory bloat",
+              "severity": "LOW",
+              "description": "ArrayList never shrinks its backing array automatically.",
+              "risk": "After a one-time large batch of additions followed by removals, the list keeps holding onto the larger backing array indefinitely unless trimToSize() is called, wasting memory for the remainder of the object's lifetime.",
+              "code": "List<byte[]> buffer = new ArrayList<>();\nloadHugeTemporaryBatch(buffer); // grows to hold 1,000,000 entries\nbuffer.clear(); // logical size is 0, but backing array capacity is still huge\n// 'buffer' is kept around as a long-lived field, wasting memory forever",
+              "solution": "List<byte[]> buffer = new ArrayList<>();\nloadHugeTemporaryBatch(buffer);\nprocess(buffer);\nbuffer.clear();\nbuffer.trimToSize(); // releases the oversized backing array\n// Or scope 'buffer' to a short-lived local variable instead of a long-lived field",
+              "detectionPattern": "NO_CLEAN_REGEX: Long-lived ArrayList fields that experience large one-time growth spikes followed by clear()/removeAll(), with no trimToSize() call afterward."
             }
           ]
         },
@@ -690,6 +1200,26 @@
               "code": "public class DataManager {\n    public void process(Object data) { }\n}",
               "solution": "public class OrderProcessor {\n    public void submitOrder(Order order) { }\n}",
               "detectionPattern": "class\\s+\\w*(Manager|Handler|Processor|Data|Info)\\b"
+            },
+            {
+              "id": "JAVA-STYLE-008",
+              "title": "Using size() == 0 instead of isEmpty() to check for an empty collection",
+              "severity": "LOW",
+              "description": "size() == 0 is functionally equivalent to isEmpty() for standard collections, but for some implementations (certain concurrent or linked structures) computing size() is O(n) or otherwise non-trivial, while isEmpty() is guaranteed O(1).",
+              "risk": "It also reads less clearly.",
+              "code": "if (list.size() == 0) {\n    return;\n}",
+              "solution": "if (list.isEmpty()) {\n    return;\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: Conditional expressions of the form collection.size() == 0 or collection.size() > 0, which can be replaced with isEmpty()/!isEmpty()."
+            },
+            {
+              "id": "JAVA-STYLE-009",
+              "title": "Manually counting frequencies with a HashMap instead of Collectors.groupingBy(..., counting())",
+              "severity": "LOW",
+              "description": "Hand-rolling a frequency count with getOrDefault()/merge() boilerplate is more verbose and error-prone than the standard Collectors.groupingBy(classifier, Collectors.counting()) idiom, which expresses the same intent in one line.",
+              "risk": "The hand-rolled getOrDefault() loop is more code to get wrong (an off-by-one, a missed increment) than the equivalent one-line Collectors.groupingBy(..., counting()) idiom.",
+              "code": "Map<String, Integer> counts = new HashMap<>();\nfor (String word : words) {\n    counts.put(word, counts.getOrDefault(word, 0) + 1); // manual boilerplate\n}",
+              "solution": "Map<String, Long> counts = words.stream()\n    .collect(Collectors.groupingBy(w -> w, Collectors.counting()));",
+              "detectionPattern": "NO_CLEAN_REGEX: Manual loops building a frequency map with getOrDefault()/merge()/containsKey() where a stream over the same source is already used elsewhere."
             }
           ]
         },
@@ -804,6 +1334,16 @@
               "code": "log.error(\"User {} viewed page {}\", userId, page);  // not an error\nlog.info(\"NullPointerException occurred\", e);  // hides a real failure",
               "solution": "log.debug(\"User {} viewed page {}\", userId, page);\nlog.error(\"Failed to process order\", e);",
               "detectionPattern": "NO_CLEAN_REGEX: business-as-usual event logged at ERROR, or an exception logged at INFO/DEBUG"
+            },
+            {
+              "id": "JAVA-LOG-004",
+              "title": "Not overriding toString() before logging collections of custom objects",
+              "severity": "LOW",
+              "description": "Logging a collection of objects that rely on the default Object.toString() prints unhelpful class-name-and-hashcode entries (e.g.",
+              "risk": "[com.example.Order@1b6d3586, ...]), giving on-call engineers nothing useful to debug with during an incident.",
+              "code": "log.info(\"Failed orders: {}\", failedOrders); // prints [com.example.Order@1b6d3586, com.example.Order@4e25154f]",
+              "solution": "// In Order:\n@Override\npublic String toString() {\n    return \"Order{id=\" + id + \", status=\" + status + \"}\";\n}\nlog.info(\"Failed orders: {}\", failedOrders); // prints [Order{id=101, status=FAILED}, ...]",
+              "detectionPattern": "NO_CLEAN_REGEX: Custom domain classes stored in collections that are passed directly to a logger, without a meaningful toString() override."
             }
           ]
         },
@@ -815,7 +1355,7 @@
               "id": "JAVA-STR-001",
               "title": "Ignoring the result of an immutable String method",
               "severity": "MEDIUM",
-              "description": "String is immutable — trim(), toUpperCase(), replace(), etc. all return a new String and leave the original unchanged. Calling one without using its return value does nothing.",
+              "description": "String is immutable \u2014 trim(), toUpperCase(), replace(), etc. all return a new String and leave the original unchanged. Calling one without using its return value does nothing.",
               "risk": "Code that calls name.trim() expecting it to clean up name in place silently has no effect at all; the untrimmed value flows through unchanged.",
               "code": "String name = \"  Alice  \";\nname.trim();          // return value discarded, does nothing\nname.toUpperCase();   // same",
               "solution": "String name = \"  Alice  \";\nname = name.trim().toUpperCase();",
@@ -871,8 +1411,8 @@
               "id": "JAVA-DATE-002",
               "title": "Creating a new SimpleDateFormat per call, or sharing one across threads",
               "severity": "HIGH",
-              "description": "SimpleDateFormat is not thread-safe — sharing one instance across threads corrupts its internal state, while creating a fresh one on every call wastes the (non-trivial) construction cost.",
-              "risk": "Two threads formatting dates through the same shared SimpleDateFormat at the same time can get back a mangled, wrong-looking date string with no exception thrown — just silently corrupted output.",
+              "description": "SimpleDateFormat is not thread-safe \u2014 sharing one instance across threads corrupts its internal state, while creating a fresh one on every call wastes the (non-trivial) construction cost.",
+              "risk": "Two threads formatting dates through the same shared SimpleDateFormat at the same time can get back a mangled, wrong-looking date string with no exception thrown \u2014 just silently corrupted output.",
               "code": "public String format(Date date) {\n    return new SimpleDateFormat(\"yyyy-MM-dd\").format(date);\n}",
               "solution": "private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern(\"yyyy-MM-dd\");\n\npublic String format(LocalDate date) {\n    return date.format(FORMATTER);  // DateTimeFormatter is immutable and thread-safe\n}",
               "detectionPattern": "new\\s+SimpleDateFormat\\("
@@ -961,7 +1501,7 @@
               "severity": "MEDIUM",
               "description": "A domain class that's only a bag of getters/setters, with all business rules living in external service classes, throws away the main benefit of OOP: keeping data and the rules that govern it together.",
               "risk": "Business rules for the same concept (e.g. 'when can an order total change') end up scattered across every service that happens to touch the object, instead of enforced in one place.",
-              "code": "public class Order {\n    private List<Item> items;\n    private BigDecimal total;\n    // only getters and setters — no behavior\n}",
+              "code": "public class Order {\n    private List<Item> items;\n    private BigDecimal total;\n    // only getters and setters \u2014 no behavior\n}",
               "solution": "public class Order {\n    private final List<Item> items = new ArrayList<>();\n\n    public void addItem(Item item) {\n        // business rules enforced here, not scattered across callers\n        items.add(item);\n    }\n\n    public BigDecimal calculateTotal() { }\n}",
               "detectionPattern": "NO_CLEAN_REGEX: domain class with only getters/setters and no methods expressing a business rule"
             },
@@ -985,7 +1525,7 @@
               "id": "JAVA-SMELL-001",
               "title": "Feature Envy",
               "severity": "MEDIUM",
-              "description": "A method that calls more getters on another class than it uses fields of its own class is doing that other class's job — the logic belongs where the data lives.",
+              "description": "A method that calls more getters on another class than it uses fields of its own class is doing that other class's job \u2014 the logic belongs where the data lives.",
               "risk": "The calculation logic and the data it operates on drift apart in different classes, so a change to one often requires hunting down the other, unrelated-looking class that actually does the work.",
               "code": "public class OrderService {\n    public double calculateTotal(Order order) {\n        double total = 0;\n        for (Item item : order.getItems()) {\n            total += item.getPrice() * item.getQuantity();\n        }\n        return total;\n    }\n}",
               "solution": "public class Order {\n    public BigDecimal calculateTotal() {\n        return items.stream().map(Item::subtotal).reduce(BigDecimal.ZERO, BigDecimal::add);\n    }\n}",
@@ -1025,7 +1565,7 @@
               "id": "JAVA-SMELL-005",
               "title": "Refused Bequest",
               "severity": "MEDIUM",
-              "description": "A subclass inherits methods it doesn't want or can't meaningfully support — a sign the inheritance relationship doesn't actually model a true is-a relationship.",
+              "description": "A subclass inherits methods it doesn't want or can't meaningfully support \u2014 a sign the inheritance relationship doesn't actually model a true is-a relationship.",
               "risk": "A caller iterating over a list of the parent type calls an inherited method that this particular subclass doesn't support, and gets a wrong result or exception purely because of a poorly-fitted hierarchy.",
               "code": "class Dog extends Animal {\n    // inherits fly(), swim(), layEggs() that make no sense for a Dog\n}",
               "solution": "// Use composition, or a narrower base type/interface that only includes\n// behavior every subtype genuinely supports.",
@@ -1115,7 +1655,7 @@
               "id": "JAVA-SMELL-014",
               "title": "Temporary Field",
               "severity": "MEDIUM",
-              "description": "A field that's only meaningful during certain operations (and null/unused the rest of the time) makes the object's valid states hard to reason about — every reader has to know which operations populate it.",
+              "description": "A field that's only meaningful during certain operations (and null/unused the rest of the time) makes the object's valid states hard to reason about \u2014 every reader has to know which operations populate it.",
               "risk": "Code elsewhere in the class accesses the field assuming it's always populated, and gets a null the moment it's called outside the one narrow flow that actually sets it.",
               "code": "public class Order {\n    private Customer customer;\n    private Discount specialDiscount;  // only ever set during black-friday processing\n}",
               "solution": "// Move the temporary data into the method that needs it, or a dedicated\n// context/parameter object scoped to that specific operation.",
@@ -1135,7 +1675,7 @@
               "id": "JAVA-SMELL-016",
               "title": "Duplicate Code",
               "severity": "HIGH",
-              "description": "The same logic copy-pasted in multiple places means every future bug fix or rule change has to be found and applied identically in every copy — and one is inevitably missed.",
+              "description": "The same logic copy-pasted in multiple places means every future bug fix or rule change has to be found and applied identically in every copy \u2014 and one is inevitably missed.",
               "risk": "A validation bug gets fixed in two of the three places it was copy-pasted; the third keeps accepting invalid data, and nobody notices until it causes a production incident.",
               "code": "// The same validation logic copied, with minor tweaks, into three different services",
               "solution": "// Extract the shared logic into one method, domain object, or validator\n// class that all three services call.",
@@ -1148,14 +1688,14 @@
               "description": "Unused methods, variables, and unreachable branches clutter the codebase and cost every future reader time figuring out whether the dead code actually matters (it doesn't).",
               "risk": "A reader assumes an unused-looking method must be called from somewhere non-obvious (reflection, a framework) and spends time tracing it, when it's simply never called at all.",
               "code": "private void oldCalculateTotal() { }  // never called\nif (false) {\n    // unreachable\n}",
-              "solution": "// Delete unused code outright. Version control preserves history if it's\n// ever needed again — there's no reason to keep it commented out or dead.",
+              "solution": "// Delete unused code outright. Version control preserves history if it's\n// ever needed again \u2014 there's no reason to keep it commented out or dead.",
               "detectionPattern": "if\\s*\\(\\s*false\\s*\\)"
             },
             {
               "id": "JAVA-SMELL-018",
               "title": "Outdated comments that no longer match the code",
               "severity": "MEDIUM",
-              "description": "A comment describing behavior the code no longer has is worse than no comment at all — it actively misleads instead of just being silent.",
+              "description": "A comment describing behavior the code no longer has is worse than no comment at all \u2014 it actively misleads instead of just being silent.",
               "risk": "A reader trusts the comment ('returns null if not found') over the actual code ('returns Optional.empty()'), and writes a null check that never fires against code that never returns null.",
               "code": "// Returns the user if found, otherwise null\npublic Optional<User> findUser(Long id) { }",
               "solution": "// Keep comments in sync with the code they describe, or delete them and\n// let self-documenting names/types carry the meaning instead.",
@@ -1201,7 +1741,7 @@
               "id": "JAVA-COUPLE-004",
               "title": "Constructor doing real work (I/O, threads, heavy computation)",
               "severity": "HIGH",
-              "description": "A constructor that opens a connection, loads a cache from a database, or starts a background thread makes the object expensive and side-effecting just to create — including in a unit test that only needs a lightweight instance.",
+              "description": "A constructor that opens a connection, loads a cache from a database, or starts a background thread makes the object expensive and side-effecting just to create \u2014 including in a unit test that only needs a lightweight instance.",
               "risk": "A unit test that only needs to check one method's logic ends up needing a real database connection or a running background thread just to construct the object under test at all.",
               "code": "public OrderService() {\n    this.connection = DriverManager.getConnection(url);\n    this.cache = loadCacheFromDb();\n    startBackgroundThread();\n}",
               "solution": "public OrderService(OrderRepository repo, Cache cache) {\n    this.repo = repo;\n    this.cache = cache;\n}\n// Heavy initialization happens outside the constructor, or lazily.",
@@ -1209,7 +1749,7 @@
             },
             {
               "id": "JAVA-COUPLE-005",
-              "title": "Making every class final by default — or never making any class final",
+              "title": "Making every class final by default \u2014 or never making any class final",
               "severity": "LOW",
               "description": "Neither extreme reflects a real design decision: blanket final closes off extension even where it would genuinely help, while never using final leaves every class open to inheritance nobody actually intended to support.",
               "risk": "A class left non-final 'by default' gets extended by someone in a way the original author never designed for or tested, since nothing signaled that inheritance wasn't intended.",
@@ -1231,7 +1771,7 @@
               "id": "JAVA-COUPLE-007",
               "title": "Side effects inside equals(), hashCode(), compareTo(), or toString()",
               "severity": "HIGH",
-              "description": "These methods are expected to be pure, fast, and callable at any time without consequence — collections, logging frameworks, and debuggers all call them freely, sometimes unexpectedly.",
+              "description": "These methods are expected to be pure, fast, and callable at any time without consequence \u2014 collections, logging frameworks, and debuggers all call them freely, sometimes unexpectedly.",
               "risk": "A debugger or logging framework calling toString() to display a value in an IDE watch window unexpectedly triggers a real side effect (a counter increment, a log line) that changes program behavior just from being observed.",
               "code": "@Override\npublic boolean equals(Object o) {\n    log.info(\"Comparing...\");\n    counter++;  // side effect inside equals()\n    return true;\n}",
               "solution": "// Keep equals/hashCode/compareTo/toString pure: no logging, no mutation,\n// no I/O. They should only read state and compute a result.",
@@ -1261,7 +1801,7 @@
               "id": "JAVA-COUPLE-010",
               "title": "High afferent/efferent coupling",
               "severity": "HIGH",
-              "description": "A class that depends on many other classes (high efferent coupling) or that many other classes depend on (high afferent coupling) becomes rigid — hard to change without a ripple effect in one direction or the other.",
+              "description": "A class that depends on many other classes (high efferent coupling) or that many other classes depend on (high afferent coupling) becomes rigid \u2014 hard to change without a ripple effect in one direction or the other.",
               "risk": "A service constructor with 15 injected dependencies means almost any change anywhere in the fifteen collaborators is a candidate for breaking this one class, and this one class is nearly impossible to test without mocking all fifteen.",
               "code": "// A service directly depending on 15 different repositories, clients, and utils",
               "solution": "// Apply a Facade or Mediator to group related dependencies, or split the\n// class's responsibilities so each piece needs fewer collaborators.",
@@ -1298,6 +1838,172 @@
               "detectionPattern": "NO_CLEAN_REGEX: a method body alternating between business-level calls and low-level technical operations (SQL, sockets, raw I/O)"
             }
           ]
+        },
+        {
+          "name": "Streams",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-STREAM-001",
+              "title": "Reusing a Stream after a terminal operation has already consumed it",
+              "severity": "MEDIUM",
+              "description": "A Stream can only be traversed once.",
+              "risk": "Invoking a second terminal operation (or re-iterating) on the same Stream instance throws IllegalStateException.",
+              "code": "Stream<String> stream = list.stream();\nlong count = stream.count();\nList<String> collected = stream.collect(Collectors.toList()); // IllegalStateException: stream has already been operated upon or closed",
+              "solution": "long count = list.stream().count();\nList<String> collected = list.stream().collect(Collectors.toList());\n// Create a fresh stream for each terminal operation, or use Supplier<Stream<T>> if reuse is needed",
+              "detectionPattern": "NO_CLEAN_REGEX: A single Stream variable referenced across more than one terminal operation (count, collect, forEach, reduce, etc.)."
+            },
+            {
+              "id": "JAVA-STREAM-002",
+              "title": "Using peek() to perform business logic or side effects instead of debugging",
+              "severity": "MEDIUM",
+              "description": "peek() is documented as a debugging aid.",
+              "risk": "Its execution is not guaranteed for every element under all pipeline optimizations (e.g. with short-circuiting or certain terminal ops), so relying on it for real side effects like saving/mutating state is unsafe.",
+              "code": "list.stream()\n    .peek(item -> item.setProcessed(true)) // side effect masquerading as debug tool\n    .collect(Collectors.toList());",
+              "solution": "list.forEach(item -> item.setProcessed(true));\n// Or fold the mutation into map()/collect() explicitly, and reserve peek() for logging only",
+              "detectionPattern": "NO_CLEAN_REGEX: peek() calls whose lambda mutates external state, persists data, or is required for correct program behavior rather than pure logging."
+            },
+            {
+              "id": "JAVA-STREAM-003",
+              "title": "Ignoring key collisions in Collectors.toMap() without a merge function",
+              "severity": "HIGH",
+              "description": "Collectors.toMap(keyFn, valueFn) throws IllegalStateException (\"Duplicate key\") at runtime if two elements produce the same key, which is easy to miss until production data triggers it.",
+              "risk": "A code path that works fine against small or clean test data throws in production the first time two real records happen to share a key.",
+              "code": "Map<String, Order> byCustomer = orders.stream()\n    .collect(Collectors.toMap(Order::getCustomerName, o -> o)); // throws if two orders share a customer name",
+              "solution": "Map<String, Order> byCustomer = orders.stream()\n    .collect(Collectors.toMap(Order::getCustomerName, o -> o, (existing, replacement) -> replacement));\n// Or collect into Map<String, List<Order>> via groupingBy if duplicates are expected",
+              "detectionPattern": "NO_CLEAN_REGEX: Collectors.toMap() calls with only two arguments where the key expression isn't guaranteed unique."
+            },
+            {
+              "id": "JAVA-STREAM-004",
+              "title": "Using Stream.iterate()/Stream.generate() without a limit(), risking an infinite loop",
+              "severity": "CRITICAL",
+              "description": "Stream.iterate() and Stream.generate() produce unbounded streams.",
+              "risk": "Without limit() or a takeWhile() condition, a terminal operation like collect() or forEach() never completes.",
+              "code": "Stream.iterate(1, n -> n + 1)\n    .filter(n -> n % 7 == 0)\n    .forEach(System.out::println); // never terminates \u2014 no limit or takeWhile",
+              "solution": "Stream.iterate(1, n -> n + 1)\n    .limit(100)\n    .filter(n -> n % 7 == 0)\n    .forEach(System.out::println);\n// Or use takeWhile(n -> n < 100) for a condition-based bound",
+              "detectionPattern": "NO_CLEAN_REGEX: Stream.iterate()/Stream.generate() pipelines with no limit()/takeWhile() before a terminal operation."
+            },
+            {
+              "id": "JAVA-STREAM-005",
+              "title": "Assuming Stream.toList() (Java 16+) returns a mutable list",
+              "severity": "MEDIUM",
+              "description": "The convenience terminal operation Stream.toList() returns an unmodifiable list, unlike Collectors.toList() which historically returns a mutable ArrayList.",
+              "risk": "Using them interchangeably leads to unexpected UnsupportedOperationException.",
+              "code": "List<String> names = list.stream()\n    .map(Item::getName)\n    .toList(); // Java 16+\nnames.add(\"extra\"); // throws UnsupportedOperationException",
+              "solution": "List<String> names = new ArrayList<>(list.stream()\n    .map(Item::getName)\n    .toList());\nnames.add(\"extra\"); // works\n// Or use .collect(Collectors.toList()) if a mutable result is needed and mutability is intentional",
+              "detectionPattern": "NO_CLEAN_REGEX: Result of .toList() later mutated with add()/remove()/set(); mixed use of .toList() and Collectors.toList() across a codebase without a clear convention."
+            },
+            {
+              "id": "JAVA-STREAM-006",
+              "title": "Relying on groupingBy()'s default HashMap when insertion or sorted order matters",
+              "severity": "LOW",
+              "description": "Collectors.groupingBy() defaults to a HashMap for the result, so group keys have no guaranteed iteration order.",
+              "risk": "Code that expects insertion or natural order needs to supply the map-factory overload explicitly.",
+              "code": "Map<String, List<Order>> byRegion = orders.stream()\n    .collect(Collectors.groupingBy(Order::getRegion));\n// iteration order of regions is unspecified and may vary",
+              "solution": "Map<String, List<Order>> byRegion = orders.stream()\n    .collect(Collectors.groupingBy(Order::getRegion, LinkedHashMap::new, Collectors.toList()));\n// or TreeMap::new for sorted-key order",
+              "detectionPattern": "NO_CLEAN_REGEX: Collectors.groupingBy() (single or two-arg form) whose result is iterated in a context where key order is visibly relied upon."
+            },
+            {
+              "id": "JAVA-STREAM-007",
+              "title": "Using Collectors.toSet() when a specific Set implementation (sorted or ordered) is required",
+              "severity": "LOW",
+              "description": "Collectors.toSet() gives no guarantee about which Set implementation is returned (in practice usually HashSet), so code that needs sorted order (TreeSet) or insertion order (LinkedHashSet) gets neither without an explicit toCollection() call.",
+              "risk": "Output that happens to look sorted today (an incidental side effect of HashSet's internal layout) has no such guarantee and can silently reorder on a JDK upgrade or a different data set.",
+              "code": "Set<String> names = items.stream()\n    .map(Item::getName)\n    .collect(Collectors.toSet()); // unspecified order \u2014 happens to look sorted today, may not tomorrow",
+              "solution": "Set<String> names = items.stream()\n    .map(Item::getName)\n    .collect(Collectors.toCollection(TreeSet::new)); // explicit sorted order guaranteed",
+              "detectionPattern": "NO_CLEAN_REGEX: Collectors.toSet() results iterated or displayed in a context where a specific order is visibly expected."
+            },
+            {
+              "id": "JAVA-STREAM-008",
+              "title": "Passing a primitive array to Stream.of() instead of Arrays.stream()",
+              "severity": "MEDIUM",
+              "description": "Stream.of(T...) is varargs.",
+              "risk": "Passing a single primitive array (e.g. int[]) makes T infer as the array type itself, producing a one-element Stream<int[]> rather than a stream of the individual elements.",
+              "code": "int[] nums = {1, 2, 3};\nStream.of(nums) // Stream<int[]> with exactly ONE element (the whole array)\n    .forEach(System.out::println); // prints the array's toString(), not 1, 2, 3",
+              "solution": "int[] nums = {1, 2, 3};\nArrays.stream(nums) // IntStream of 1, 2, 3\n    .forEach(System.out::println);\n// Note: this pitfall does not occur with Object arrays like String[], only primitive arrays",
+              "detectionPattern": "NO_CLEAN_REGEX: Stream.of(primitiveArrayVariable) where the argument is a single int[]/long[]/double[] etc. rather than individual elements."
+            },
+            {
+              "id": "JAVA-STREAM-009",
+              "title": "Misunderstanding that allMatch()/noneMatch() return true on an empty stream",
+              "severity": "MEDIUM",
+              "description": "allMatch() and noneMatch() are defined by vacuous truth: an empty stream trivially satisfies 'all elements match' and 'no elements match', which surprises developers expecting a false result or an explicit empty-check requirement.",
+              "risk": "A business-critical check like 'all orders are paid' silently reports true for an empty order list, and the code proceeds as if verification actually happened when nothing was checked at all.",
+              "code": "List<Order> orders = List.of(); // empty\nboolean allPaid = orders.stream().allMatch(Order::isPaid); // true \u2014 no orders violate the condition, vacuously\n// code proceeds as if verified, when nothing was actually checked",
+              "solution": "List<Order> orders = List.of();\nboolean allPaid = !orders.isEmpty() && orders.stream().allMatch(Order::isPaid);\n// Explicitly decide what an empty collection should mean for this business rule",
+              "detectionPattern": "NO_CLEAN_REGEX: allMatch()/noneMatch() results used as a business-critical check without a preceding or accompanying emptiness check, where an empty input is possible."
+            },
+            {
+              "id": "JAVA-STREAM-010",
+              "title": "Checked exceptions thrown inside stream lambdas forcing awkward wrapping",
+              "severity": "LOW",
+              "description": "Functional interfaces used by Stream methods (Function, Consumer, etc.) don't declare checked exceptions, so calling a method that throws one inside a lambda won't compile without wrapping it, and developers often reach for a blanket unchecked rethrow that obscures the original exception's context.",
+              "risk": "Wrapping every checked exception in a generic RuntimeException erases the original exception's type, so a caller further up that wants to catch IOException specifically no longer can.",
+              "code": "list.stream()\n    .map(path -> {\n        try {\n            return Files.readString(path); // IOException is checked\n        } catch (IOException e) {\n            throw new RuntimeException(e); // generic wrapper, loses type information\n        }\n    })\n    .collect(Collectors.toList());",
+              "solution": "list.stream()\n    .map(path -> {\n        try {\n            return Files.readString(path);\n        } catch (IOException e) {\n            throw new UncheckedIOException(e); // purpose-built wrapper, preserves intent\n        }\n    })\n    .collect(Collectors.toList());\n// Or extract the try/catch into a named helper method for clarity and reuse",
+              "detectionPattern": "NO_CLEAN_REGEX: Stream lambdas containing try/catch blocks that rethrow as generic RuntimeException instead of a purpose-specific unchecked exception."
+            },
+            {
+              "id": "JAVA-STREAM-011",
+              "title": "Using map(Optional::isPresent).filter(...).map(Optional::get) instead of flatMap(Optional::stream)",
+              "severity": "LOW",
+              "description": "Unwrapping a stream of Optional<T> values by filtering on isPresent() and then calling get() is verbose and reintroduces the same get()-without-check risk Optional was meant to avoid.",
+              "risk": "FlatMap(Optional::stream) (Java 9+) does the filtering and unwrapping in one safe step.",
+              "code": "List<String> names = ids.stream()\n    .map(this::findNameById) // returns Optional<String>\n    .filter(Optional::isPresent)\n    .map(Optional::get)\n    .collect(Collectors.toList());",
+              "solution": "List<String> names = ids.stream()\n    .map(this::findNameById)\n    .flatMap(Optional::stream) // drops empties, unwraps present values\n    .collect(Collectors.toList());",
+              "detectionPattern": "NO_CLEAN_REGEX: A stream pipeline chaining .filter(Optional::isPresent).map(Optional::get) (or similar) instead of a single flatMap(Optional::stream) call."
+            },
+            {
+              "id": "JAVA-STREAM-012",
+              "title": "Using a non-associative or stateful accumulator in reduce(), producing inconsistent results in parallel streams",
+              "severity": "HIGH",
+              "description": "reduce() requires its combiner/accumulator to be associative and stateless for correct results.",
+              "risk": "A subtraction-style or otherwise order-dependent accumulator gives one answer sequentially but a different (wrong) answer when the same pipeline runs in parallel, since chunks are combined in an unpredictable order.",
+              "code": "int result = numbers.parallelStream()\n    .reduce(0, (a, b) -> a - b); // subtraction isn't associative \u2014 result depends on chunking order",
+              "solution": "int result = numbers.parallelStream()\n    .reduce(0, Integer::sum); // addition is associative \u2014 safe in parallel\n// For non-associative operations, use a sequential stream or restructure the computation",
+              "detectionPattern": "NO_CLEAN_REGEX: reduce() lambdas using subtraction, division, string concatenation order-dependence, or other non-commutative/non-associative operations, especially on a parallelStream()."
+            },
+            {
+              "id": "JAVA-STREAM-013",
+              "title": "Recomputing an expensive stream pipeline multiple times instead of collecting once and reusing the result",
+              "severity": "LOW",
+              "description": "Because a Stream can't be reused, developers sometimes rebuild and re-run the entire pipeline (re-filtering, re-mapping, re-sorting the source) each time a result is needed, repeating expensive work that a single collect() and reused list would avoid.",
+              "risk": "The same filter/map/sort pipeline runs twice over the same source data when the first result could simply have been stored and reused.",
+              "code": "if (source.stream().filter(Item::isActive).count() > 0) {\n    List<Item> active = source.stream().filter(Item::isActive).collect(Collectors.toList()); // pipeline re-run\n}",
+              "solution": "List<Item> active = source.stream().filter(Item::isActive).collect(Collectors.toList()); // run once\nif (!active.isEmpty()) {\n    // reuse the already-computed list\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: The same filter/map/sort chain built from the same source collection more than once within a method, where the first result could have been reused."
+            },
+            {
+              "id": "JAVA-STREAM-014",
+              "title": "Using forEach() with an external mutable collection to accumulate stream results instead of collect()",
+              "severity": "MEDIUM",
+              "description": "Pushing results into a collection declared outside the stream via forEach() defeats the purpose of the Streams API's functional, side-effect-free design, and is unsafe if the pipeline is later parallelized since the external collection likely isn't thread-safe.",
+              "risk": "The pipeline can't be safely parallelized later (the external list usually isn't thread-safe), reintroducing the exact external-mutation pattern collect()/map() was designed to replace.",
+              "code": "List<String> names = new ArrayList<>();\nitems.stream()\n    .filter(Item::isActive)\n    .forEach(item -> names.add(item.getName())); // external mutation side effect",
+              "solution": "List<String> names = items.stream()\n    .filter(Item::isActive)\n    .map(Item::getName)\n    .collect(Collectors.toList()); // no external mutable state, safe to parallelize",
+              "detectionPattern": "NO_CLEAN_REGEX: forEach() lambdas that call add()/put()/append() on a collection declared outside the stream pipeline, where collect()/map() would express the same intent."
+            },
+            {
+              "id": "JAVA-STREAM-015",
+              "title": "Calling sorted() (natural ordering) on a stream of non-Comparable elements",
+              "severity": "MEDIUM",
+              "description": "The no-argument sorted() overload requires elements to implement Comparable.",
+              "risk": "Calling it on a type that doesn't compiles only if the stream's static type is inferred loosely, but throws ClassCastException at runtime the moment sorting is attempted.",
+              "code": "List<Point> points = List.of(new Point(1, 2), new Point(3, 1)); // Point doesn't implement Comparable\npoints.stream().sorted().collect(Collectors.toList()); // ClassCastException at runtime",
+              "solution": "points.stream()\n    .sorted(Comparator.comparingInt(Point::getX).thenComparingInt(Point::getY))\n    .collect(Collectors.toList()); // explicit Comparator, no Comparable required",
+              "detectionPattern": "NO_CLEAN_REGEX: sorted() called with no arguments on a stream whose element type does not implement Comparable."
+            },
+            {
+              "id": "JAVA-STREAM-016",
+              "title": "Writing a custom Collector with a combiner function that isn't correct for parallel execution",
+              "severity": "HIGH",
+              "description": "Collector.of() requires accumulator, combiner, and finisher functions that all behave consistently regardless of how the stream is split.",
+              "risk": "A combiner that assumes sequential accumulation (e.g. ignoring one side entirely) produces correct results only when the stream happens to run sequentially, silently breaking under parallelStream().",
+              "code": "Collector<String, StringBuilder, String> collector = Collector.of(\n    StringBuilder::new,\n    StringBuilder::append,\n    (sb1, sb2) -> sb1, // WRONG \u2014 discards sb2's accumulated content entirely\n    StringBuilder::toString\n);",
+              "solution": "Collector<String, StringBuilder, String> collector = Collector.of(\n    StringBuilder::new,\n    StringBuilder::append,\n    (sb1, sb2) -> sb1.append(sb2), // correctly merges both partial results\n    StringBuilder::toString\n);",
+              "detectionPattern": "NO_CLEAN_REGEX: Custom Collector.of()/Collector implementations whose combiner function doesn't merge both partial results (e.g. returns one argument unchanged)."
+            }
+          ]
         }
       ]
     },
@@ -1332,7 +2038,7 @@
               "id": "SPRING-DI-003",
               "title": "Using new to manually create a Spring-managed bean",
               "severity": "HIGH",
-              "description": "Constructing a @Service/@Component/@Repository class with `new` bypasses the Spring container entirely — no dependency injection into it, and none of Spring's proxies (transactions, security, AOP) apply to it.",
+              "description": "Constructing a @Service/@Component/@Repository class with `new` bypasses the Spring container entirely \u2014 no dependency injection into it, and none of Spring's proxies (transactions, security, AOP) apply to it.",
               "risk": "A manually-`new`'d service silently runs without @Transactional taking effect, so a multi-step write that should roll back on failure doesn't, because there's no Spring transaction proxy wrapping this instance.",
               "code": "OrderService service = new OrderService();\nservice.createOrder(order);",
               "solution": "// Let Spring inject the managed bean instead of constructing it manually.\npublic MyController(OrderService orderService) {\n    this.orderService = orderService;\n}",
