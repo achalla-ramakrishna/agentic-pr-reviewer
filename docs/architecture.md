@@ -55,7 +55,7 @@ on any other package.
               └──────────────┬───────────────────┘
                               ▼
                        Review + Findings
-                       (persisted, Postgres/H2)
+                       (persisted, MySQL/H2)
                               │
                               ▼
                     Dashboard (React) — view findings,

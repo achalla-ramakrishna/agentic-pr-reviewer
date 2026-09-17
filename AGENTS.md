@@ -28,8 +28,9 @@ for the full requirements and `docs/architecture.md` for how the pieces fit.
   `domain`, `dto`, `client`, `config`). Constructor injection only, no field
   `@Autowired`. Lombok is available — prefer it over boilerplate getters.
   DB schema changes go through Flyway migrations in
-  `backend/src/main/resources/db/migration/{h2,postgres}` — never edit an
-  already-applied migration, add a new one.
+  `backend/src/main/resources/db/migration/{h2,mysql}` — never edit an
+  already-applied migration, add a new one, and mirror the change into
+  both dialect folders (see `docs/adr/0002-mysql-database.md`).
 - **Frontend**: functional components + hooks, TypeScript strict mode, no
   class components. API calls go through a thin client module, not
   scattered `fetch` calls in components.

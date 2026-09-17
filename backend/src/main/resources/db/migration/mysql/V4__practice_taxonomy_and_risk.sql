@@ -13,13 +13,13 @@ ALTER TABLE practice RENAME COLUMN good_example TO solution;
 -- Bootstrap, HTML/CSS, and MySQL are all in scope alongside Java/TS/JS —
 -- none of those are programming languages. Rename to technology.
 ALTER TABLE practice RENAME COLUMN language TO technology;
-DROP INDEX idx_practice_language_active;
+DROP INDEX idx_practice_language_active ON practice;
 CREATE INDEX idx_practice_technology_active ON practice(technology, active);
 
 -- Defensive backfill in case any row predates this column (the seeder
 -- always sets practice_code for new rows).
-UPDATE practice SET practice_code = 'LEGACY-' || CAST(id AS VARCHAR) WHERE practice_code IS NULL;
+UPDATE practice SET practice_code = CONCAT('LEGACY-', HEX(id)) WHERE practice_code IS NULL;
 
-ALTER TABLE practice ALTER COLUMN practice_code SET NOT NULL;
+ALTER TABLE practice MODIFY COLUMN practice_code VARCHAR(40) NOT NULL;
 CREATE UNIQUE INDEX idx_practice_code ON practice(practice_code);
 CREATE INDEX idx_practice_subcategory ON practice(subcategory);

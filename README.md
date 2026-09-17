@@ -40,8 +40,29 @@ cd backend
 mvn spring-boot:run
 ```
 
-Runs on `http://localhost:8080` with an in-memory H2 database (dev
-profile). `GET /api/health` should return `{"status":"ok"}`.
+Runs on `http://localhost:8080` with an in-memory H2 database (`dev`
+profile, the default). `GET /api/health` should return `{"status":"ok"}`.
+
+To run against a real local MySQL instead (see
+[`docs/adr/0002-mysql-database.md`](docs/adr/0002-mysql-database.md) for
+why MySQL): create the database and user once —
+
+```sql
+CREATE DATABASE prreviewer CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'prreviewer'@'localhost' IDENTIFIED BY 'prreviewer';
+GRANT ALL PRIVILEGES ON prreviewer.* TO 'prreviewer'@'localhost';
+```
+
+then run with the `mysql` profile:
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.profiles=mysql
+```
+
+Defaults to `jdbc:mysql://localhost:3306/prreviewer` with user/password
+`prreviewer`/`prreviewer`; override with the `DB_URL`/`DB_USERNAME`/
+`DB_PASSWORD` environment variables if yours differ.
 
 Frontend:
 
