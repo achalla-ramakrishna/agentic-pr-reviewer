@@ -1,7 +1,66 @@
 .app-shell {
-  max-width: 640px;
-  margin: 4rem auto;
+  max-width: 960px;
+  margin: 3rem auto;
   padding: 0 1.5rem;
   font-family: system-ui, sans-serif;
   text-align: left;
+}
+
+.practices-library__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.practices-library__error {
+  color: #b00020;
+}
+
+.practices-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.practices-table th,
+.practices-table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #ddd;
+}
+
+.practices-table__inactive {
+  opacity: 0.5;
+}
+
+.practice-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+}
+
+.practice-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.practice-form__row {
+  display: flex;
+  gap: 1rem;
+}
+
+.practice-form__row label {
+  flex: 1;
+}
+
+.practice-form textarea {
+  min-height: 4rem;
+  font-family: ui-monospace, monospace;
 }

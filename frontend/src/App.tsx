@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import './App.css'
+import { PracticesLibrary } from './components/PracticesLibrary'
 
 type HealthStatus = 'checking' | 'ok' | 'unreachable'
 
@@ -15,10 +16,10 @@ function App() {
   return (
     <main className="app-shell">
       <h1>Agentic PR Reviewer</h1>
-      <p>Dashboard, review submission, and practices library land here as the build progresses.</p>
       <p>
         Backend status: <strong>{backendStatus}</strong>
       </p>
+      <PracticesLibrary />
     </main>
   )
 }
