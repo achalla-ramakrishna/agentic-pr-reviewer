@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Blocks commits whose staged diff contains a real-shaped credential.
+# Enable once per clone with: git config core.hooksPath .githooks
+set -euo pipefail
+
+pattern='(ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+
+hits="$(git diff --cached -U0 | grep -E '^\+' | grep -Ev '^\+\+\+' | grep -E "$pattern" || true)"
+
+if [[ -n "$hits" ]]; then
+  echo "pre-commit: blocked — staged diff contains what looks like a real credential:" >&2
+  echo "$hits" >&2
+  echo "If this is a deliberately fake example, use a value that doesn't match a real key shape (e.g. 'ghp_example...' rather than 20+ random chars)." >&2
+  exit 1
+fi

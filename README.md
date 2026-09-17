@@ -22,6 +22,15 @@ together.
 - `frontend/` — React + TypeScript (Vite) dashboard.
 - `docs/` — spec, architecture, ADRs.
 
+## One-time setup
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Enables the pre-commit secret scan (`.githooks/pre-commit`) so a
+real-shaped credential can't land in a commit by accident.
+
 ## Running locally
 
 Backend:
