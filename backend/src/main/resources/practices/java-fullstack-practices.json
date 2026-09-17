@@ -1,0 +1,588 @@
+{
+  "technologies": [
+    {
+      "technology": "JAVA",
+      "topics": [
+        {
+          "name": "Exception Handling",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-EXC-001",
+              "title": "Empty catch block swallows exceptions",
+              "severity": "HIGH",
+              "description": "Catching an exception and doing nothing hides failures until they surface somewhere confusing much later, instead of at the point they actually happened.",
+              "risk": "Data corruption or a broken downstream call goes unnoticed; the bug report that eventually comes in points nowhere near the real cause.",
+              "code": "try {\n    processOrder(order);\n} catch (Exception e) {\n}",
+              "solution": "try {\n    processOrder(order);\n} catch (OrderProcessingException e) {\n    log.error(\"Failed to process order {}\", order.getId(), e);\n    throw e;\n}",
+              "detectionPattern": "catch\\s*\\([^)]*\\)\\s*\\{\\s*\\}"
+            },
+            {
+              "id": "JAVA-EXC-002",
+              "title": "Catching generic Exception instead of a specific type",
+              "severity": "MEDIUM",
+              "description": "Catching Exception or Throwable masks unrelated failures, including unchecked bugs like a NullPointerException, as if they were the expected failure mode.",
+              "risk": "A real bug (NPE, ClassCastException) gets silently absorbed by handling meant for an expected, recoverable failure like a missing file.",
+              "code": "try {\n    readConfig(path);\n} catch (Exception e) {\n    log.warn(\"Config read failed\", e);\n}",
+              "solution": "try {\n    readConfig(path);\n} catch (IOException e) {\n    log.warn(\"Config read failed\", e);\n}",
+              "detectionPattern": "catch\\s*\\(\\s*(Exception|Throwable)\\s+\\w+\\s*\\)"
+            },
+            {
+              "id": "JAVA-EXC-003",
+              "title": "Losing the original exception cause when wrapping",
+              "severity": "MEDIUM",
+              "description": "Wrapping an exception in a new one without passing the original as the cause discards the stack trace that shows what actually failed.",
+              "risk": "Production incident logs show only the wrapper's generic message; diagnosing the real failure requires reproducing it from scratch.",
+              "code": "catch (SQLException e) {\n    throw new RuntimeException(\"DB error\");\n}",
+              "solution": "catch (SQLException e) {\n    throw new RuntimeException(\"DB error\", e);\n}",
+              "detectionPattern": "throw\\s+new\\s+\\w+Exception\\(\"[^\"]*\"\\)\\s*;"
+            }
+          ]
+        },
+        {
+          "name": "Null Handling",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-NULL-001",
+              "title": "Returning null instead of Optional or an empty collection",
+              "severity": "MEDIUM",
+              "description": "A null return forces every caller to remember a null check or risk an NPE far from the source. An empty List/Optional makes the absent case impossible to forget.",
+              "risk": "A caller that forgets the null check throws an NPE in production, often several layers away from where null originated.",
+              "code": "public List<Order> findOrders(String userId) {\n    List<Order> orders = repository.findByUser(userId);\n    return orders.isEmpty() ? null : orders;\n}",
+              "solution": "public List<Order> findOrders(String userId) {\n    return repository.findByUser(userId);\n}",
+              "detectionPattern": "return\\s+null\\s*;"
+            }
+          ]
+        },
+        {
+          "name": "Object Equality",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-EQ-001",
+              "title": "String compared with == instead of .equals()",
+              "severity": "HIGH",
+              "description": "== compares object identity, not content. Two equal strings from different sources (e.g. one from a DB read) can be == false while .equals() correctly returns true.",
+              "risk": "A conditional silently takes the wrong branch whenever the string wasn't interned the same way, e.g. after deserialization or string concatenation.",
+              "code": "if (status == \"APPROVED\") {\n    approve(order);\n}",
+              "solution": "if (\"APPROVED\".equals(status)) {\n    approve(order);\n}",
+              "detectionPattern": "==\\s*\"[^\"]*\"|\"[^\"]*\"\\s*=="
+            }
+          ]
+        },
+        {
+          "name": "Resource Management",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-RES-001",
+              "title": "Closeable resource opened without try-with-resources",
+              "severity": "HIGH",
+              "description": "A stream/connection opened without try-with-resources leaks a file handle or connection if the code between open and close throws.",
+              "risk": "Under load, leaked file handles or DB connections exhaust the pool and the whole service starts failing unrelated requests.",
+              "code": "FileInputStream in = new FileInputStream(file);\nprocess(in);\nin.close();",
+              "solution": "try (FileInputStream in = new FileInputStream(file)) {\n    process(in);\n}",
+              "detectionPattern": "new\\s+(FileInputStream|FileOutputStream|BufferedReader|FileReader)\\([^)]*\\)\\s*;"
+            }
+          ]
+        },
+        {
+          "name": "Concurrency",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JAVA-CONC-001",
+              "title": "Mutable HashMap shared across threads without synchronization",
+              "severity": "HIGH",
+              "description": "HashMap is not thread-safe. Concurrent reads/writes from multiple threads can corrupt its internal structure or return stale/incorrect data.",
+              "risk": "Under concurrent load this can infinite-loop a thread (classic HashMap resize bug) or silently drop/return wrong entries \u2014 both hard to reproduce outside production traffic.",
+              "code": "private final Map<String, Session> sessions = new HashMap<>();",
+              "solution": "private final Map<String, Session> sessions = new ConcurrentHashMap<>();",
+              "detectionPattern": "new\\s+HashMap<[^>]*>\\(\\)"
+            }
+          ]
+        },
+        {
+          "name": "Performance",
+          "category": "PERFORMANCE",
+          "practices": [
+            {
+              "id": "JAVA-PERF-001",
+              "title": "String concatenation in a loop",
+              "severity": "MEDIUM",
+              "description": "Each += on a String allocates a new String; over N iterations this is O(n^2). StringBuilder amortizes to O(n).",
+              "risk": "Fine in a unit test with 5 rows, then times out or spikes latency once a real dataset with thousands of rows hits it.",
+              "code": "String csv = \"\";\nfor (Order order : orders) {\n    csv += order.getId() + \",\";\n}",
+              "solution": "StringBuilder csv = new StringBuilder();\nfor (Order order : orders) {\n    csv.append(order.getId()).append(\",\");\n}",
+              "detectionPattern": "for\\s*\\([^)]*\\)\\s*\\{[^}]*\\w+\\s*\\+=.*\\+"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "SPRING",
+      "topics": [
+        {
+          "name": "Dependency Injection",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "SPRING-DI-001",
+              "title": "Field injection instead of constructor injection",
+              "severity": "LOW",
+              "description": "@Autowired on a field hides the dependency from the constructor signature, makes the class harder to unit test without Spring, and allows constructing an object in an invalid half-wired state.",
+              "risk": "A missing dependency isn't caught until Spring wires it at runtime (or a plain `new` in a test leaves it null), instead of failing to compile/construct.",
+              "code": "@Autowired\nprivate OrderService orderService;",
+              "solution": "private final OrderService orderService;\n\npublic OrderController(OrderService orderService) {\n    this.orderService = orderService;\n}",
+              "detectionPattern": "@Autowired\\s*\\n\\s*private"
+            }
+          ]
+        },
+        {
+          "name": "REST API Design",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "SPRING-API-001",
+              "title": "Returning a JPA entity directly from a REST controller",
+              "severity": "MEDIUM",
+              "description": "Serializing the entity couples the wire format to the DB schema, risks leaking fields (e.g. an internal audit column) that were never meant to be public, and can trigger lazy-loading exceptions outside a transaction.",
+              "risk": "Adding an internal-only DB column silently exposes it in the API response; a lazy collection accessed by the serializer outside the transaction throws LazyInitializationException in production.",
+              "code": "@GetMapping(\"/orders/{id}\")\npublic Order getOrder(@PathVariable UUID id) {\n    return orderRepository.findById(id).orElseThrow();\n}",
+              "solution": "@GetMapping(\"/orders/{id}\")\npublic OrderResponse getOrder(@PathVariable UUID id) {\n    return OrderResponse.from(orderRepository.findById(id).orElseThrow());\n}",
+              "detectionPattern": "public\\s+\\w*Entity\\b.*\\{[^}]*findById"
+            }
+          ]
+        },
+        {
+          "name": "Transaction Management",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "SPRING-TX-001",
+              "title": "Missing @Transactional on a multi-step write",
+              "severity": "HIGH",
+              "description": "Without @Transactional, a failure partway through a multi-step write (e.g. debit one account, credit another) leaves the database in an inconsistent, partially-applied state.",
+              "risk": "A crash between the two writes leaves money debited from one account and never credited to the other, with no automatic rollback.",
+              "code": "public void transfer(Account from, Account to, BigDecimal amount) {\n    from.debit(amount);\n    accountRepository.save(from);\n    to.credit(amount);\n    accountRepository.save(to);\n}",
+              "solution": "@Transactional\npublic void transfer(Account from, Account to, BigDecimal amount) {\n    from.debit(amount);\n    accountRepository.save(from);\n    to.credit(amount);\n    accountRepository.save(to);\n}",
+              "detectionPattern": "NO_ANNOTATION_HEURISTIC: multi-repository-write method body without a @Transactional on the enclosing method"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "HIBERNATE",
+      "topics": [
+        {
+          "name": "Data Access Performance",
+          "category": "PERFORMANCE",
+          "practices": [
+            {
+              "id": "HIB-PERF-001",
+              "title": "N+1 query from a lazily-loaded association accessed in a loop",
+              "severity": "HIGH",
+              "description": "Accessing a lazy @OneToMany/@ManyToOne inside a loop over the parent entities issues one extra query per row instead of a single joined/batched fetch.",
+              "risk": "A page that's fast with 10 test rows issues hundreds of queries against real data and times out or saturates the connection pool.",
+              "code": "List<Order> orders = orderRepository.findAll();\nfor (Order order : orders) {\n    System.out.println(order.getCustomer().getName());\n}",
+              "solution": "@Query(\"SELECT o FROM Order o JOIN FETCH o.customer\")\nList<Order> findAllWithCustomer();",
+              "detectionPattern": "NO_CLEAN_REGEX: loop over a repository result accessing a lazy association's getter"
+            },
+            {
+              "id": "HIB-PERF-002",
+              "title": "Loading an entire table into memory instead of paging",
+              "severity": "MEDIUM",
+              "description": "findAll() with no Pageable pulls every row into memory and serializes all of it, regardless of what the caller actually needed.",
+              "risk": "Works in dev with 50 rows, then OOMs or produces a multi-second, multi-megabyte response once the table has millions.",
+              "code": "public List<Order> listOrders() {\n    return orderRepository.findAll();\n}",
+              "solution": "public Page<Order> listOrders(Pageable pageable) {\n    return orderRepository.findAll(pageable);\n}",
+              "detectionPattern": "findAll\\(\\)(?!.*Pageable)"
+            }
+          ]
+        },
+        {
+          "name": "Concurrency",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "HIB-CONC-001",
+              "title": "Missing @Version field allows lost updates",
+              "severity": "MEDIUM",
+              "description": "Without optimistic locking, two concurrent updates to the same row both succeed, and the second silently overwrites the first's changes.",
+              "risk": "Two users editing the same order at once: one user's changes vanish with no error and no record that a conflict happened.",
+              "code": "@Entity\npublic class Order {\n    @Id\n    private UUID id;\n    private String status;\n}",
+              "solution": "@Entity\npublic class Order {\n    @Id\n    private UUID id;\n    private String status;\n\n    @Version\n    private long version;\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: @Entity class with mutable fields and no @Version"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "SQL",
+      "topics": [
+        {
+          "name": "Injection",
+          "category": "SECURITY",
+          "practices": [
+            {
+              "id": "SQL-INJ-001",
+              "title": "SQL built via string concatenation",
+              "severity": "CRITICAL",
+              "description": "Concatenating a user-controlled value into a SQL string is a SQL injection vector. A PreparedStatement with bound parameters is not optional here, even for internal tools.",
+              "risk": "An attacker-controlled userId value like `' OR '1'='1` returns every row in the table, or worse, chains into a destructive statement.",
+              "code": "String sql = \"SELECT * FROM users WHERE id = '\" + userId + \"'\";\nStatement stmt = connection.createStatement();\nResultSet rs = stmt.executeQuery(sql);",
+              "solution": "String sql = \"SELECT * FROM users WHERE id = ?\";\nPreparedStatement stmt = connection.prepareStatement(sql);\nstmt.setString(1, userId);\nResultSet rs = stmt.executeQuery();",
+              "detectionPattern": "\"[^\"]*SELECT[^\"]*\"\\s*\\+"
+            }
+          ]
+        },
+        {
+          "name": "Query Performance",
+          "category": "PERFORMANCE",
+          "practices": [
+            {
+              "id": "SQL-PERF-001",
+              "title": "Missing index on a frequently filtered or joined column",
+              "severity": "MEDIUM",
+              "description": "A WHERE/JOIN on a column with no index forces a full table scan; the query gets slower in direct proportion to table size.",
+              "risk": "A query that returns in milliseconds on a 1,000-row dev table takes seconds on the 10-million-row production table, and locks up under concurrent load.",
+              "code": "CREATE TABLE orders (\n    id UUID PRIMARY KEY,\n    customer_id UUID NOT NULL,\n    status VARCHAR(20)\n);\n-- queries filter heavily on customer_id and status, no index on either",
+              "solution": "CREATE INDEX idx_orders_customer_id ON orders(customer_id);\nCREATE INDEX idx_orders_status ON orders(status);",
+              "detectionPattern": "NO_CLEAN_REGEX: WHERE/JOIN column with no matching CREATE INDEX in the migration set"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "MYSQL",
+      "topics": [
+        {
+          "name": "Data Integrity",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "MYSQL-DATA-001",
+              "title": "Table charset not set to utf8mb4",
+              "severity": "MEDIUM",
+              "description": "MySQL's utf8 charset is actually a 3-byte-max encoding and can't store emoji or many CJK/astral characters; utf8mb4 is the real UTF-8.",
+              "risk": "Saving a name or comment containing an emoji either throws an 'Incorrect string value' error or silently truncates the string at the offending character.",
+              "code": "CREATE TABLE users (\n    id BINARY(16) PRIMARY KEY,\n    display_name VARCHAR(100)\n) DEFAULT CHARSET=utf8;",
+              "solution": "CREATE TABLE users (\n    id BINARY(16) PRIMARY KEY,\n    display_name VARCHAR(100)\n) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;",
+              "detectionPattern": "CHARSET\\s*=\\s*utf8(?!mb4)"
+            }
+          ]
+        },
+        {
+          "name": "Query Performance",
+          "category": "PERFORMANCE",
+          "practices": [
+            {
+              "id": "MYSQL-PERF-001",
+              "title": "Comparing a VARCHAR column to a number causes an implicit cast and a full table scan",
+              "severity": "MEDIUM",
+              "description": "MySQL implicitly converts types in a comparison. WHERE order_code = 12345 against a VARCHAR column silently casts every row's value instead of using the index.",
+              "risk": "A query that should hit an index on order_code instead scans the whole table, and this only shows up once the table is large enough to notice.",
+              "code": "SELECT * FROM orders WHERE order_code = 12345;",
+              "solution": "SELECT * FROM orders WHERE order_code = '12345';",
+              "detectionPattern": "WHERE\\s+\\w*code\\w*\\s*=\\s*\\d+(?!')"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "JAVASCRIPT",
+      "topics": [
+        {
+          "name": "Object Equality",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JS-EQ-001",
+              "title": "Loose equality (==) instead of strict equality (===)",
+              "severity": "MEDIUM",
+              "description": "== performs type coercion before comparing (0 == '' is true, null == undefined is true), producing comparisons that pass when they shouldn't.",
+              "risk": "A guard like `if (userId == 0)` also matches an empty string or false, letting an unintended branch execute for unexpected input shapes.",
+              "code": "if (count == 0) {\n  showEmptyState();\n}",
+              "solution": "if (count === 0) {\n  showEmptyState();\n}",
+              "detectionPattern": "[^=!]==[^=]"
+            }
+          ]
+        },
+        {
+          "name": "Scoping",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "JS-SCOPE-001",
+              "title": "var instead of let/const causing function-scoped leakage",
+              "severity": "LOW",
+              "description": "var is function-scoped and hoisted, so a variable declared inside a block (loop, if) leaks outside it and can be redeclared without error \u2014 unlike the block-scoped let/const.",
+              "risk": "A classic bug: a var loop counter captured in an async callback ends up with the same final value in every callback instead of each iteration's value.",
+              "code": "for (var i = 0; i < items.length; i++) {\n  setTimeout(() => console.log(i), 0);\n}",
+              "solution": "for (let i = 0; i < items.length; i++) {\n  setTimeout(() => console.log(i), 0);\n}",
+              "detectionPattern": "\\bvar\\s+\\w+"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "TYPESCRIPT",
+      "topics": [
+        {
+          "name": "Type Safety",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "TS-TYPE-001",
+              "title": "Using any to silence a type error instead of typing the value",
+              "severity": "MEDIUM",
+              "description": "any opts a value out of type checking entirely, so a typo'd property name or wrong argument type compiles cleanly and fails only at runtime.",
+              "risk": "A refactor that renames a field breaks every `any`-typed call site silently at compile time; the failure only shows up when that code path runs.",
+              "code": "function formatUser(user: any) {\n  return user.fullname;\n}",
+              "solution": "interface User {\n  fullName: string;\n}\n\nfunction formatUser(user: User) {\n  return user.fullName;\n}",
+              "detectionPattern": ":\\s*any\\b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "REACT",
+      "topics": [
+        {
+          "name": "State Management",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "REACT-STATE-001",
+              "title": "Mutating state directly instead of via the state setter",
+              "severity": "HIGH",
+              "description": "React decides whether to re-render by comparing references. Mutating an array/object in place keeps the same reference, so React doesn't know anything changed.",
+              "risk": "The UI silently stops reflecting the actual data \u2014 an item added to a list never appears until some unrelated state change forces a re-render.",
+              "code": "const [items, setItems] = useState([]);\nfunction addItem(item) {\n  items.push(item);\n  setItems(items);\n}",
+              "solution": "const [items, setItems] = useState([]);\nfunction addItem(item) {\n  setItems([...items, item]);\n}",
+              "detectionPattern": "\\w+\\.(push|splice|pop|shift|unshift)\\([^)]*\\)\\s*;\\s*set\\w+\\("
+            }
+          ]
+        },
+        {
+          "name": "Frontend Security",
+          "category": "SECURITY",
+          "practices": [
+            {
+              "id": "REACT-SEC-001",
+              "title": "dangerouslySetInnerHTML with unsanitized content",
+              "severity": "CRITICAL",
+              "description": "Rendering raw HTML from an untrusted source (user input, an external API) without sanitizing it first is a stored/reflected XSS vector.",
+              "risk": "A user-submitted comment containing a <script> tag executes in every other visitor's browser session, with access to their cookies/tokens.",
+              "code": "<div dangerouslySetInnerHTML={{ __html: comment.body }} />",
+              "solution": "import DOMPurify from 'dompurify';\n\n<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(comment.body) }} />",
+              "detectionPattern": "dangerouslySetInnerHTML"
+            }
+          ]
+        },
+        {
+          "name": "Frontend Performance",
+          "category": "PERFORMANCE",
+          "practices": [
+            {
+              "id": "REACT-PERF-001",
+              "title": "Inline function/object literal passed as a prop defeats React.memo",
+              "severity": "LOW",
+              "description": "A new function or object literal is created on every render. Passed to a React.memo'd child, it breaks the prop-equality check that memo relies on, so the child re-renders anyway.",
+              "risk": "A list of memoized rows re-renders on every parent state change regardless of the memoization, and nobody notices why the optimization isn't working.",
+              "code": "<MemoizedRow onSelect={() => handleSelect(item.id)} style={{ padding: 8 }} />",
+              "solution": "const onSelect = useCallback(() => handleSelect(item.id), [item.id]);\nconst rowStyle = useMemo(() => ({ padding: 8 }), []);\n\n<MemoizedRow onSelect={onSelect} style={rowStyle} />",
+              "detectionPattern": "on\\w+=\\{\\(\\)\\s*=>"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "HTML",
+      "topics": [
+        {
+          "name": "Accessibility",
+          "category": "ACCESSIBILITY",
+          "practices": [
+            {
+              "id": "HTML-A11Y-001",
+              "title": "Non-semantic clickable div instead of a button element",
+              "severity": "MEDIUM",
+              "description": "A <div onClick> gets none of a <button>'s built-in keyboard focus, Enter/Space activation, or screen-reader role for free \u2014 all of it has to be reimplemented by hand, and usually isn't.",
+              "risk": "A keyboard-only or screen-reader user cannot activate the control at all; it's invisible to assistive technology as an interactive element.",
+              "code": "<div className=\"submit-btn\" onClick={handleSubmit}>Submit</div>",
+              "solution": "<button type=\"button\" className=\"submit-btn\" onClick={handleSubmit}>Submit</button>",
+              "detectionPattern": "<div[^>]*onClick"
+            },
+            {
+              "id": "HTML-A11Y-002",
+              "title": "Image missing alt text",
+              "severity": "MEDIUM",
+              "description": "An <img> with no alt attribute is announced by a screen reader as just the filename, or skipped entirely, conveying nothing about its content or purpose.",
+              "risk": "A screen-reader user gets no information about a meaningful image (a chart, a product photo) and may miss content sighted users rely on.",
+              "code": "<img src=\"/order-status.png\" />",
+              "solution": "<img src=\"/order-status.png\" alt=\"Order status: shipped\" />",
+              "detectionPattern": "<img(?![^>]*\\balt=)[^>]*>"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "CSS",
+      "topics": [
+        {
+          "name": "Maintainability",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "CSS-STYLE-001",
+              "title": "Overusing !important instead of fixing selector specificity",
+              "severity": "LOW",
+              "description": "!important overrides normal cascade rules and compounds: once one rule needs it to win, the next override needs !important too, and the cascade becomes unpredictable.",
+              "risk": "A later, more specific rule that should win silently loses to an unrelated !important declared months earlier, and the fix is to add yet another !important.",
+              "code": ".alert-banner {\n  color: red !important;\n}",
+              "solution": ".page-header .alert-banner {\n  color: red;\n}",
+              "detectionPattern": "!important"
+            },
+            {
+              "id": "CSS-STYLE-002",
+              "title": "Hardcoded magic-number colors/spacing instead of design tokens",
+              "severity": "LOW",
+              "description": "A literal hex color or pixel value repeated across many rules means a design change requires a find-and-replace across the whole codebase instead of one variable update.",
+              "risk": "A brand color update or a spacing-scale change requires touching dozens of files, and it's easy to miss one, leaving a visibly inconsistent UI.",
+              "code": ".card {\n  padding: 13px;\n  border-color: #3a7bd5;\n}",
+              "solution": ":root {\n  --spacing-md: 12px;\n  --color-primary: #3a7bd5;\n}\n.card {\n  padding: var(--spacing-md);\n  border-color: var(--color-primary);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: repeated literal color/spacing value across multiple rules with no custom property"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "BOOTSTRAP",
+      "topics": [
+        {
+          "name": "Maintainability",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "BS-STYLE-001",
+              "title": "Overriding Bootstrap classes with inline !important instead of Sass variable overrides",
+              "severity": "LOW",
+              "description": "Patching Bootstrap's look with scattered inline !important styles fights the framework instead of configuring it, and breaks the next time Bootstrap is upgraded.",
+              "risk": "A Bootstrap version bump changes a selector's specificity and the !important overrides stop applying in some places but not others, producing inconsistent styling that's hard to trace.",
+              "code": "<button class=\"btn btn-primary\" style=\"background-color: #123456 !important;\">Save</button>",
+              "solution": "// custom.scss\n$primary: #123456;\n@import \"bootstrap/scss/bootstrap\";",
+              "detectionPattern": "style=\"[^\"]*!important"
+            }
+          ]
+        },
+        {
+          "name": "Responsive Design",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "BS-STYLE-002",
+              "title": "Hardcoding pixel breakpoints instead of Bootstrap's responsive grid/utilities",
+              "severity": "LOW",
+              "description": "A custom @media (max-width: 800px) duplicates logic Bootstrap's grid and responsive utility classes (col-md-*, d-none d-md-block) already provide consistently across the app.",
+              "risk": "Every hand-rolled breakpoint is a slightly different number, so the app's responsive behavior becomes inconsistent page to page, and Bootstrap's own components break out of sync with the custom ones.",
+              "code": "@media (max-width: 800px) {\n  .sidebar { display: none; }\n}",
+              "solution": "<div class=\"sidebar d-none d-md-block\">...</div>",
+              "detectionPattern": "@media\\s*\\(max-width:\\s*\\d+px\\)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "technology": "GENERAL",
+      "topics": [
+        {
+          "name": "Secrets Management",
+          "category": "SECURITY",
+          "practices": [
+            {
+              "id": "GEN-SEC-001",
+              "title": "Hardcoded credential or API key in source",
+              "severity": "CRITICAL",
+              "description": "A committed secret is compromised the moment it's pushed, whether or not the repo is public today \u2014 history doesn't forget. Load secrets from environment/config at runtime instead.",
+              "risk": "Anyone with read access to the repo (or its history, even after a later 'fix') can extract and use the credential; rotation is the only real remediation once this happens.",
+              "code": "String apiKey = \"sk-live-91a2b3c4d5e6f7g8h9i0\";",
+              "solution": "String apiKey = System.getenv(\"OPENAI_API_KEY\");",
+              "detectionPattern": "(password|apiKey|secret|token)\\s*=\\s*\"[^\"]{8,}\""
+            },
+            {
+              "id": "GEN-SEC-002",
+              "title": "API key or secret embedded in a frontend bundle",
+              "severity": "CRITICAL",
+              "description": "Anything shipped in client-side JavaScript is visible to every visitor via browser devtools, regardless of minification. A frontend can only safely hold public, purpose-limited keys.",
+              "risk": "A backend-scoped API key embedded for convenience gets extracted from the bundle and used directly against the provider, outside any of the app's own rate limits or authorization checks.",
+              "code": "const OPENAI_KEY = \"sk-live-91a2b3c4d5e6f7g8h9i0\";\nfetch(\"https://api.openai.com/v1/...\", { headers: { Authorization: `Bearer ${OPENAI_KEY}` } });",
+              "solution": "// Call your own backend, which holds the real key server-side.\nfetch(\"/api/reviews\", { method: \"POST\", body });",
+              "detectionPattern": "(sk-|ghp_|AKIA)[A-Za-z0-9]{10,}"
+            }
+          ]
+        },
+        {
+          "name": "Logging",
+          "category": "SECURITY",
+          "practices": [
+            {
+              "id": "GEN-SEC-003",
+              "title": "Logging sensitive data",
+              "severity": "HIGH",
+              "description": "Passwords, tokens, and full card numbers written to logs end up in log aggregators, backups, and support tickets \u2014 systems with far weaker access control than the original request.",
+              "risk": "A support engineer or a compromised log-aggregation account gets direct access to live credentials, without ever touching the production database.",
+              "code": "log.info(\"Login attempt: user={} password={}\", username, password);",
+              "solution": "log.info(\"Login attempt: user={}\", username);",
+              "detectionPattern": "log\\.\\w+\\([^)]*password[^)]*\\)"
+            }
+          ]
+        },
+        {
+          "name": "Dependency Hygiene",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "GEN-DEP-001",
+              "title": "Adding a dependency without pinning a version or verifying the package name",
+              "severity": "MEDIUM",
+              "description": "An unpinned version range can pull in a breaking or malicious update on the next build; a mistyped package name can pull in an unrelated (or malicious, typosquatted) package entirely.",
+              "risk": "A typosquatted package (e.g. `reqeusts` instead of `requests`) runs arbitrary code at install time; an unpinned range silently upgrades into a breaking API change on the next clean install.",
+              "code": "\"some-utility\": \"*\"",
+              "solution": "\"some-utility\": \"^2.3.1\"  // verified on npmjs.com: correct name, real maintainers, matches expected download counts",
+              "detectionPattern": "NO_CLEAN_REGEX: dependency manifest entry with a wildcard/unbounded version range"
+            }
+          ]
+        },
+        {
+          "name": "Test Design",
+          "category": "TEST_QUALITY",
+          "practices": [
+            {
+              "id": "GEN-TEST-001",
+              "title": "Test with no assertions",
+              "severity": "MEDIUM",
+              "description": "A test that only calls the method under test and returns proves the code doesn't throw \u2014 nothing about whether it did the right thing. It stays green through real regressions.",
+              "risk": "A genuine regression in business logic ships to production with full test coverage reported green, because the test never actually checked the outcome.",
+              "code": "@Test\nvoid createOrderSucceeds() {\n    orderService.createOrder(request);\n}",
+              "solution": "@Test\nvoid createOrderSucceeds() {\n    Order order = orderService.createOrder(request);\n    assertThat(order.getStatus()).isEqualTo(OrderStatus.CREATED);\n}",
+              "detectionPattern": "NO_ASSERTION_HEURISTIC: method annotated @Test whose body contains no assert*/verify* call"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

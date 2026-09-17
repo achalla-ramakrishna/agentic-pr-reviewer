@@ -21,6 +21,10 @@ import org.hibernate.annotations.UuidGenerator;
  * A single curated good/bad coding practice used to deterministically compare
  * against a diff (see RuleEngineService, chunk 4) and as retrieved context for
  * the LLM review pass (see LlmReviewService, chunk 5).
+ *
+ * practiceCode is the stable, human-readable id (e.g. "JAVA-EXC-001") a
+ * review finding or doc references — independent of the DB-generated UUID,
+ * which is free to differ across environments/reseeds.
  */
 @Entity
 @Table(name = "practice")
@@ -35,6 +39,9 @@ public class Practice {
     @UuidGenerator
     private UUID id;
 
+    @Column(name = "practice_code", nullable = false, unique = true, length = 40)
+    private String practiceCode;
+
     @Column(nullable = false, length = 200)
     private String title;
 
@@ -45,19 +52,29 @@ public class Practice {
     @Column(nullable = false, length = 30)
     private Category category;
 
+    /** The specific topic within category, e.g. "Exception Handling", "Frontend Security". */
+    @Column(length = 60)
+    private String subcategory;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private Severity severity;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
-    private Language language;
+    private Technology technology;
 
-    @Column(name = "bad_example", columnDefinition = "TEXT")
-    private String badExample;
+    /** The bad example. */
+    @Column(columnDefinition = "TEXT")
+    private String code;
 
-    @Column(name = "good_example", columnDefinition = "TEXT")
-    private String goodExample;
+    /** The fix. */
+    @Column(columnDefinition = "TEXT")
+    private String solution;
+
+    /** Plain-English consequence if this ships, distinct from the severity label. */
+    @Column(columnDefinition = "TEXT")
+    private String risk;
 
     @Column(name = "detection_pattern", columnDefinition = "TEXT")
     private String detectionPattern;

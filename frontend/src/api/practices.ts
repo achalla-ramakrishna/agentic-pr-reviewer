@@ -8,17 +8,32 @@ export type Category =
 
 export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO'
 
-export type Language = 'JAVA' | 'TYPESCRIPT' | 'JAVASCRIPT' | 'GENERAL'
+export type Technology =
+  | 'JAVA'
+  | 'SPRING'
+  | 'HIBERNATE'
+  | 'SQL'
+  | 'MYSQL'
+  | 'JAVASCRIPT'
+  | 'TYPESCRIPT'
+  | 'REACT'
+  | 'HTML'
+  | 'CSS'
+  | 'BOOTSTRAP'
+  | 'GENERAL'
 
 export interface Practice {
   id: string
+  practiceCode: string
   title: string
   description: string
   category: Category
+  subcategory: string | null
   severity: Severity
-  language: Language
-  badExample: string | null
-  goodExample: string | null
+  technology: Technology
+  code: string | null
+  solution: string | null
+  risk: string | null
   detectionPattern: string | null
   active: boolean
   createdAt: string
@@ -26,13 +41,16 @@ export interface Practice {
 }
 
 export interface PracticeInput {
+  practiceCode: string
   title: string
   description: string
   category: Category
+  subcategory?: string
   severity: Severity
-  language: Language
-  badExample?: string
-  goodExample?: string
+  technology: Technology
+  code?: string
+  solution?: string
+  risk?: string
   detectionPattern?: string
 }
 

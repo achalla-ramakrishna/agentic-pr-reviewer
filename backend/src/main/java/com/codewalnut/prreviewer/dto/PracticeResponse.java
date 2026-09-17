@@ -1,21 +1,24 @@
 package com.codewalnut.prreviewer.dto;
 
 import com.codewalnut.prreviewer.domain.Category;
-import com.codewalnut.prreviewer.domain.Language;
 import com.codewalnut.prreviewer.domain.Practice;
 import com.codewalnut.prreviewer.domain.Severity;
+import com.codewalnut.prreviewer.domain.Technology;
 import java.time.Instant;
 import java.util.UUID;
 
 public record PracticeResponse(
         UUID id,
+        String practiceCode,
         String title,
         String description,
         Category category,
+        String subcategory,
         Severity severity,
-        Language language,
-        String badExample,
-        String goodExample,
+        Technology technology,
+        String code,
+        String solution,
+        String risk,
         String detectionPattern,
         boolean active,
         Instant createdAt,
@@ -24,13 +27,16 @@ public record PracticeResponse(
     public static PracticeResponse from(Practice practice) {
         return new PracticeResponse(
                 practice.getId(),
+                practice.getPracticeCode(),
                 practice.getTitle(),
                 practice.getDescription(),
                 practice.getCategory(),
+                practice.getSubcategory(),
                 practice.getSeverity(),
-                practice.getLanguage(),
-                practice.getBadExample(),
-                practice.getGoodExample(),
+                practice.getTechnology(),
+                practice.getCode(),
+                practice.getSolution(),
+                practice.getRisk(),
                 practice.getDetectionPattern(),
                 practice.isActive(),
                 practice.getCreatedAt(),

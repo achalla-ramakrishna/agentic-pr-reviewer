@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.codewalnut.prreviewer.dto.PracticeRequest;
 import com.codewalnut.prreviewer.dto.PracticeResponse;
 import com.codewalnut.prreviewer.domain.Category;
-import com.codewalnut.prreviewer.domain.Language;
 import com.codewalnut.prreviewer.domain.Severity;
+import com.codewalnut.prreviewer.domain.Technology;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -33,29 +35,65 @@ class PracticeControllerTest {
     }
 
     @Test
-    void seededJavaPracticesArePresent() {
+    void seededPracticesSpanTheFullStackTaxonomy() {
         ResponseEntity<PracticeResponse[]> response =
                 rest.getForEntity(url("/api/practices"), PracticeResponse[].class);
 
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
         assertThat(response.getBody()).isNotNull();
-        assertThat(response.getBody().length).isGreaterThanOrEqualTo(10);
+        assertThat(response.getBody().length).isGreaterThanOrEqualTo(30);
+
+        var byTechnology =
+                Arrays.stream(response.getBody())
+                        .map(PracticeResponse::technology)
+                        .collect(Collectors.toSet());
+        assertThat(byTechnology)
+                .contains(
+                        Technology.JAVA,
+                        Technology.SPRING,
+                        Technology.HIBERNATE,
+                        Technology.SQL,
+                        Technology.MYSQL,
+                        Technology.JAVASCRIPT,
+                        Technology.TYPESCRIPT,
+                        Technology.REACT,
+                        Technology.HTML,
+                        Technology.CSS,
+                        Technology.BOOTSTRAP,
+                        Technology.GENERAL);
+
         assertThat(response.getBody())
-                .anyMatch(p -> p.title().equals("Empty catch block swallows exceptions"))
-                .allMatch(p -> p.language() == Language.JAVA);
+                .anyMatch(
+                        p ->
+                                p.practiceCode().equals("JAVA-EXC-001")
+                                        && p.title().equals("Empty catch block swallows exceptions")
+                                        && p.subcategory().equals("Exception Handling")
+                                        && p.risk() != null
+                                        && p.code() != null
+                                        && p.solution() != null);
+
+        // Every practiceCode is unique.
+        assertThat(
+                        Arrays.stream(response.getBody())
+                                .map(PracticeResponse::practiceCode)
+                                .collect(Collectors.toSet()))
+                .hasSize(response.getBody().length);
     }
 
     @Test
     void fullCrudLifecycle() {
         PracticeRequest createRequest =
                 new PracticeRequest(
+                        "TEST-ONLY-001",
                         "Test-only practice",
                         "Created by an integration test.",
                         Category.STYLE,
+                        "Test Fixtures",
                         Severity.LOW,
-                        Language.JAVA,
+                        Technology.JAVA,
                         "bad example",
                         "good example",
+                        "some risk",
                         "N/A");
 
         ResponseEntity<PracticeResponse> created =
@@ -71,13 +109,16 @@ class PracticeControllerTest {
 
         PracticeRequest updateRequest =
                 new PracticeRequest(
+                        "TEST-ONLY-001",
                         "Updated practice title",
                         "Updated description.",
                         Category.STYLE,
+                        "Test Fixtures",
                         Severity.MEDIUM,
-                        Language.JAVA,
+                        Technology.JAVA,
                         "bad",
                         "good",
+                        "some risk",
                         "N/A");
         rest.put(url("/api/practices/" + id), updateRequest);
 
@@ -105,11 +146,32 @@ class PracticeControllerTest {
     @Test
     void rejectsInvalidPractice() {
         PracticeRequest invalid =
-                new PracticeRequest("", "", null, null, null, null, null, null);
+                new PracticeRequest("", "", "", null, null, null, null, null, null, null, null);
 
         ResponseEntity<Map> response =
                 rest.postForEntity(url("/api/practices"), invalid, Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void rejectsDuplicatePracticeCode() {
+        PracticeRequest request =
+                new PracticeRequest(
+                        "JAVA-EXC-001", // already used by a seeded practice
+                        "Duplicate code attempt",
+                        "Should be rejected.",
+                        Category.STYLE,
+                        "Test Fixtures",
+                        Severity.LOW,
+                        Technology.JAVA,
+                        "bad",
+                        "good",
+                        "risk",
+                        "N/A");
+
+        ResponseEntity<Map> response = rest.postForEntity(url("/api/practices"), request, Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     }
 }

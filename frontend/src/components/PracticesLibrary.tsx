@@ -1,13 +1,13 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { Fragment, useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   createPractice,
   deletePractice,
   listPractices,
   setPracticeActive,
   type Category,
-  type Language,
   type Practice,
   type Severity,
+  type Technology,
 } from '../api/practices'
 
 const CATEGORIES: Category[] = [
@@ -19,17 +19,50 @@ const CATEGORIES: Category[] = [
   'ACCESSIBILITY',
 ]
 const SEVERITIES: Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']
-const LANGUAGES: Language[] = ['JAVA', 'TYPESCRIPT', 'JAVASCRIPT', 'GENERAL']
+const TECHNOLOGIES: Technology[] = [
+  'JAVA',
+  'SPRING',
+  'HIBERNATE',
+  'SQL',
+  'MYSQL',
+  'JAVASCRIPT',
+  'TYPESCRIPT',
+  'REACT',
+  'HTML',
+  'CSS',
+  'BOOTSTRAP',
+  'GENERAL',
+]
 
 const emptyForm = {
+  practiceCode: '',
   title: '',
   description: '',
   category: 'CORRECTNESS' as Category,
+  subcategory: '',
   severity: 'MEDIUM' as Severity,
-  language: 'JAVA' as Language,
-  badExample: '',
-  goodExample: '',
+  technology: 'JAVA' as Technology,
+  code: '',
+  solution: '',
+  risk: '',
   detectionPattern: '',
+}
+
+/** technology -> subcategory (topic) -> practices, matching how the knowledge base is curated. */
+function groupByTechnologyAndTopic(practices: Practice[]) {
+  const byTechnology = new Map<Technology, Map<string, Practice[]>>()
+  for (const practice of practices) {
+    const topic = practice.subcategory ?? '(uncategorized)'
+    if (!byTechnology.has(practice.technology)) {
+      byTechnology.set(practice.technology, new Map())
+    }
+    const topics = byTechnology.get(practice.technology)!
+    if (!topics.has(topic)) {
+      topics.set(topic, [])
+    }
+    topics.get(topic)!.push(practice)
+  }
+  return byTechnology
 }
 
 export function PracticesLibrary() {
@@ -50,6 +83,8 @@ export function PracticesLibrary() {
 
   useEffect(refresh, [])
 
+  const grouped = useMemo(() => groupByTechnologyAndTopic(practices), [practices])
+
   async function handleToggleActive(practice: Practice) {
     try {
       await setPracticeActive(practice.id, !practice.active)
@@ -60,7 +95,7 @@ export function PracticesLibrary() {
   }
 
   async function handleDelete(practice: Practice) {
-    if (!window.confirm(`Delete "${practice.title}"?`)) return
+    if (!window.confirm(`Delete "${practice.title}" (${practice.practiceCode})?`)) return
     try {
       await deletePractice(practice.id)
       refresh()
@@ -88,7 +123,7 @@ export function PracticesLibrary() {
   return (
     <section className="practices-library">
       <div className="practices-library__header">
-        <h2>Practices library</h2>
+        <h2>Practices library ({practices.length})</h2>
         <button type="button" onClick={() => setShowForm((v) => !v)}>
           {showForm ? 'Cancel' : 'Add practice'}
         </button>
@@ -98,14 +133,25 @@ export function PracticesLibrary() {
 
       {showForm && (
         <form className="practice-form" onSubmit={handleSubmit}>
-          <label>
-            Title
-            <input
-              required
-              value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
-            />
-          </label>
+          <div className="practice-form__row">
+            <label>
+              Practice code
+              <input
+                required
+                placeholder="e.g. JAVA-EXC-004"
+                value={form.practiceCode}
+                onChange={(e) => setForm({ ...form, practiceCode: e.target.value })}
+              />
+            </label>
+            <label>
+              Title
+              <input
+                required
+                value={form.title}
+                onChange={(e) => setForm({ ...form, title: e.target.value })}
+              />
+            </label>
+          </div>
           <label>
             Description
             <textarea
@@ -115,6 +161,19 @@ export function PracticesLibrary() {
             />
           </label>
           <div className="practice-form__row">
+            <label>
+              Technology
+              <select
+                value={form.technology}
+                onChange={(e) => setForm({ ...form, technology: e.target.value as Technology })}
+              >
+                {TECHNOLOGIES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label>
               Category
               <select
@@ -141,32 +200,32 @@ export function PracticesLibrary() {
                 ))}
               </select>
             </label>
-            <label>
-              Language
-              <select
-                value={form.language}
-                onChange={(e) => setForm({ ...form, language: e.target.value as Language })}
-              >
-                {LANGUAGES.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
           <label>
-            Bad example
-            <textarea
-              value={form.badExample}
-              onChange={(e) => setForm({ ...form, badExample: e.target.value })}
+            Topic (subcategory)
+            <input
+              placeholder="e.g. Exception Handling"
+              value={form.subcategory}
+              onChange={(e) => setForm({ ...form, subcategory: e.target.value })}
             />
           </label>
           <label>
-            Good example
+            Risk
             <textarea
-              value={form.goodExample}
-              onChange={(e) => setForm({ ...form, goodExample: e.target.value })}
+              placeholder="What actually goes wrong if this ships?"
+              value={form.risk}
+              onChange={(e) => setForm({ ...form, risk: e.target.value })}
+            />
+          </label>
+          <label>
+            Code (bad example)
+            <textarea value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
+          </label>
+          <label>
+            Solution (good example)
+            <textarea
+              value={form.solution}
+              onChange={(e) => setForm({ ...form, solution: e.target.value })}
             />
           </label>
           <button type="submit" disabled={submitting}>
@@ -178,37 +237,75 @@ export function PracticesLibrary() {
       {loading ? (
         <p>Loading practices...</p>
       ) : (
-        <table className="practices-table">
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Category</th>
-              <th>Severity</th>
-              <th>Language</th>
-              <th>Active</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {practices.map((practice) => (
-              <tr key={practice.id} className={practice.active ? '' : 'practices-table__inactive'}>
-                <td title={practice.description}>{practice.title}</td>
-                <td>{practice.category}</td>
-                <td>{practice.severity}</td>
-                <td>{practice.language}</td>
-                <td>{practice.active ? 'yes' : 'no'}</td>
-                <td>
-                  <button type="button" onClick={() => handleToggleActive(practice)}>
-                    {practice.active ? 'Deactivate' : 'Activate'}
-                  </button>
-                  <button type="button" onClick={() => handleDelete(practice)}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        Array.from(grouped.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([technology, topics]) => (
+            <div key={technology} className="technology-group">
+              <h3>{technology}</h3>
+              {Array.from(topics.entries())
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([topic, topicPractices]) => (
+                  <div key={topic} className="topic-group">
+                    <h4>{topic}</h4>
+                    <table className="practices-table">
+                      <thead>
+                        <tr>
+                          <th>Code</th>
+                          <th>Title</th>
+                          <th>Severity</th>
+                          <th>Active</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {topicPractices.map((practice) => (
+                          <Fragment key={practice.id}>
+                            <tr className={practice.active ? '' : 'practices-table__inactive'}>
+                              <td>{practice.practiceCode}</td>
+                              <td title={practice.description}>{practice.title}</td>
+                              <td>{practice.severity}</td>
+                              <td>{practice.active ? 'yes' : 'no'}</td>
+                              <td>
+                                <button type="button" onClick={() => handleToggleActive(practice)}>
+                                  {practice.active ? 'Deactivate' : 'Activate'}
+                                </button>
+                                <button type="button" onClick={() => handleDelete(practice)}>
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td colSpan={5}>
+                                <details>
+                                  <summary>Risk, code, and solution</summary>
+                                  {practice.risk && (
+                                    <p>
+                                      <strong>Risk:</strong> {practice.risk}
+                                    </p>
+                                  )}
+                                  {practice.code && (
+                                    <>
+                                      <strong>Code (bad):</strong>
+                                      <pre>{practice.code}</pre>
+                                    </>
+                                  )}
+                                  {practice.solution && (
+                                    <>
+                                      <strong>Solution (good):</strong>
+                                      <pre>{practice.solution}</pre>
+                                    </>
+                                  )}
+                                </details>
+                              </td>
+                            </tr>
+                          </Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+            </div>
+          ))
       )}
     </section>
   )

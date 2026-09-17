@@ -1,7 +1,7 @@
 package com.codewalnut.prreviewer.service;
 
-import com.codewalnut.prreviewer.domain.Language;
 import com.codewalnut.prreviewer.domain.Practice;
+import com.codewalnut.prreviewer.domain.Technology;
 import com.codewalnut.prreviewer.dto.PracticeRequest;
 import com.codewalnut.prreviewer.repository.PracticeRepository;
 import java.util.List;
@@ -21,9 +21,9 @@ public class PracticeService {
         return practiceRepository.findAll();
     }
 
-    /** Used by the rule engine (chunk 4) and LLM context builder (chunk 5) to scope by language. */
-    public List<Practice> listActiveByLanguage(Language language) {
-        return practiceRepository.findByLanguageAndActiveTrue(language);
+    /** Used by the rule engine (chunk 4) and LLM context builder (chunk 5) to scope by technology. */
+    public List<Practice> listActiveByTechnology(Technology technology) {
+        return practiceRepository.findByTechnologyAndActiveTrue(technology);
     }
 
     public Practice get(UUID id) {
@@ -35,13 +35,16 @@ public class PracticeService {
     public Practice create(PracticeRequest request) {
         Practice practice =
                 Practice.builder()
+                        .practiceCode(request.practiceCode())
                         .title(request.title())
                         .description(request.description())
                         .category(request.category())
+                        .subcategory(request.subcategory())
                         .severity(request.severity())
-                        .language(request.language())
-                        .badExample(request.badExample())
-                        .goodExample(request.goodExample())
+                        .technology(request.technology())
+                        .code(request.code())
+                        .solution(request.solution())
+                        .risk(request.risk())
                         .detectionPattern(request.detectionPattern())
                         .build();
         return practiceRepository.save(practice);
@@ -49,13 +52,16 @@ public class PracticeService {
 
     public Practice update(UUID id, PracticeRequest request) {
         Practice practice = get(id);
+        practice.setPracticeCode(request.practiceCode());
         practice.setTitle(request.title());
         practice.setDescription(request.description());
         practice.setCategory(request.category());
+        practice.setSubcategory(request.subcategory());
         practice.setSeverity(request.severity());
-        practice.setLanguage(request.language());
-        practice.setBadExample(request.badExample());
-        practice.setGoodExample(request.goodExample());
+        practice.setTechnology(request.technology());
+        practice.setCode(request.code());
+        practice.setSolution(request.solution());
+        practice.setRisk(request.risk());
         practice.setDetectionPattern(request.detectionPattern());
         return practiceRepository.save(practice);
     }
