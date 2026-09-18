@@ -93,7 +93,7 @@ app in a working state. Later chunks assume earlier ones are done.
    cases above. ✅
 4. **Rule engine** — deterministic checks that match diff content against
    `Practice` patterns for Java (starting with a focused, high-confidence
-   rule set, not an exhaustive linter reimplementation).
+   rule set, not an exhaustive linter reimplementation). ✅
 5. **LLM review pass** — OpenAI client, prompt built from diff + retrieved
    relevant practices (context engineering, not a full-repo dump),
    structured output parsed into `Finding`s.
