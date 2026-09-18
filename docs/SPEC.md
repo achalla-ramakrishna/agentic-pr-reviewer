@@ -101,7 +101,7 @@ app in a working state. Later chunks assume earlier ones are done.
    file/line/category, assigns `BOTH` where they agree, persists the
    `Review`, exposes the submit + fetch API end to end. ✅
 7. **Dashboard frontend** — submit a repo/PR, view a review's findings
-   grouped by severity/category with evidence, accept/reject a finding.
+   grouped by severity/category with evidence, accept/reject a finding. ✅
 8. **Metrics & feedback loop** — aggregate dashboard (reviews over time,
    precision from accept/reject, top recurring categories), API to record
    feedback.

@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 import { PracticesLibrary } from './components/PracticesLibrary'
+import { ReviewsDashboard } from './components/ReviewsDashboard'
 
 type HealthStatus = 'checking' | 'ok' | 'unreachable'
+type Tab = 'reviews' | 'practices'
 
 function App() {
   const [backendStatus, setBackendStatus] = useState<HealthStatus>('checking')
+  const [tab, setTab] = useState<Tab>('reviews')
 
   useEffect(() => {
     fetch('/api/health')
@@ -19,7 +22,23 @@ function App() {
       <p>
         Backend status: <strong>{backendStatus}</strong>
       </p>
-      <PracticesLibrary />
+      <nav className="app-tabs">
+        <button
+          type="button"
+          className={tab === 'reviews' ? 'app-tabs__item app-tabs__item--active' : 'app-tabs__item'}
+          onClick={() => setTab('reviews')}
+        >
+          Reviews
+        </button>
+        <button
+          type="button"
+          className={tab === 'practices' ? 'app-tabs__item app-tabs__item--active' : 'app-tabs__item'}
+          onClick={() => setTab('practices')}
+        >
+          Practices library
+        </button>
+      </nav>
+      {tab === 'reviews' ? <ReviewsDashboard /> : <PracticesLibrary />}
     </main>
   )
 }
