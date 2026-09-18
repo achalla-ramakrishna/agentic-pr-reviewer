@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import './App.css'
+import { MetricsDashboard } from './components/MetricsDashboard'
 import { PracticesLibrary } from './components/PracticesLibrary'
 import { ReviewsDashboard } from './components/ReviewsDashboard'
 
 type HealthStatus = 'checking' | 'ok' | 'unreachable'
-type Tab = 'reviews' | 'practices'
+type Tab = 'reviews' | 'metrics' | 'practices'
 
 function App() {
   const [backendStatus, setBackendStatus] = useState<HealthStatus>('checking')
@@ -32,13 +33,22 @@ function App() {
         </button>
         <button
           type="button"
+          className={tab === 'metrics' ? 'app-tabs__item app-tabs__item--active' : 'app-tabs__item'}
+          onClick={() => setTab('metrics')}
+        >
+          Metrics
+        </button>
+        <button
+          type="button"
           className={tab === 'practices' ? 'app-tabs__item app-tabs__item--active' : 'app-tabs__item'}
           onClick={() => setTab('practices')}
         >
           Practices library
         </button>
       </nav>
-      {tab === 'reviews' ? <ReviewsDashboard /> : <PracticesLibrary />}
+      {tab === 'reviews' && <ReviewsDashboard />}
+      {tab === 'metrics' && <MetricsDashboard />}
+      {tab === 'practices' && <PracticesLibrary />}
     </main>
   )
 }

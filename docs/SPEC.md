@@ -104,7 +104,7 @@ app in a working state. Later chunks assume earlier ones are done.
    grouped by severity/category with evidence, accept/reject a finding. ✅
 8. **Metrics & feedback loop** — aggregate dashboard (reviews over time,
    precision from accept/reject, top recurring categories), API to record
-   feedback.
+   feedback. ✅
 9. **Evidence-led review record** — attach reproducible evidence to each
    review (which rules fired and why, exact LLM prompt/response reference,
    diff stat) so a human can verify without re-running anything.

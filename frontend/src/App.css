@@ -381,3 +381,253 @@
   font-size: 0.85rem;
   margin-top: 0.25rem;
 }
+
+.metrics-dashboard {
+  --chart-surface: #fcfcfb;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --gridline: #e1e0d9;
+  --baseline: #c3c2b7;
+  --series-1: #2a78d6;
+  --status-good: #0ca30c;
+  --status-critical: #d03b3b;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.metrics-dashboard__error {
+  color: #b00020;
+}
+
+.metrics-dashboard__tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.stat-tile {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 1rem;
+  background: var(--chart-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.stat-tile__label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.stat-tile__value {
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.stat-tile__sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.metrics-chart {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 1rem;
+  background: var(--chart-surface);
+}
+
+.metrics-chart h3 {
+  margin-top: 0;
+}
+
+.metrics-chart__empty {
+  color: var(--text-muted);
+}
+
+.metrics-chart__table {
+  margin-top: 0.75rem;
+}
+
+.metrics-chart__table summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.metrics-chart__table table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.metrics-chart__table th,
+.metrics-chart__table td {
+  text-align: left;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--gridline);
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-chart--vertical {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  height: 160px;
+  padding-top: 1.5rem;
+  border-bottom: 1px solid var(--baseline);
+}
+
+.bar-chart__column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+}
+
+.bar-chart__bar--vertical {
+  width: 100%;
+  max-width: 24px;
+  background: var(--series-1);
+  border-radius: 4px 4px 0 0;
+  min-height: 2px;
+}
+
+.bar-chart__value {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.15rem;
+}
+
+.bar-chart__tick {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 0.3rem;
+}
+
+.bar-chart--horizontal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.bar-chart__row {
+  display: grid;
+  grid-template-columns: 110px 1fr 2.5rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bar-chart__row-label {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+.bar-chart__track {
+  background: var(--chart-surface);
+  border-bottom: 1px solid var(--gridline);
+  height: 24px;
+  display: flex;
+  align-items: center;
+}
+
+.bar-chart__bar--horizontal {
+  height: 24px;
+  background: var(--series-1);
+  border-radius: 0 4px 4px 0;
+  min-width: 2px;
+}
+
+.bar-chart__bar--good {
+  background: var(--status-good);
+}
+
+.bar-chart__bar--critical {
+  background: var(--status-critical);
+}
+
+.precision-legend {
+  list-style: none;
+  display: flex;
+  gap: 1.25rem;
+  padding: 0;
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.precision-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.precision-legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.precision-legend__swatch--accepted {
+  background: var(--status-good);
+}
+
+.precision-legend__swatch--rejected {
+  background: var(--status-critical);
+}
+
+.precision-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.precision-group {
+  border: 1px solid var(--gridline);
+  border-radius: 6px;
+  padding: 0.75rem;
+}
+
+.precision-group__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+
+.precision-group__source {
+  font-weight: 600;
+}
+
+.precision-group__rate {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.precision-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.precision-bars__row {
+  display: grid;
+  grid-template-columns: 60px 1fr 2rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.precision-bars__label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
