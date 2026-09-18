@@ -87,10 +87,10 @@ app in a working state. Later chunks assume earlier ones are done.
    end to end. ✅
 2. **Domain model + practices knowledge base** — JPA entities
    (`Practice`, `Review`, `Finding`, feedback), Flyway migrations, seed set
-   of Java good/bad practices, CRUD API + minimal library screen.
+   of Java good/bad practices, CRUD API + minimal library screen. ✅
 3. **GitHub integration** — client to resolve a repo/PR URL into a unified
    diff + changed-file contents via PAT; error handling for the boundary
-   cases above.
+   cases above. ✅
 4. **Rule engine** — deterministic checks that match diff content against
    `Practice` patterns for Java (starting with a focused, high-confidence
    rule set, not an exhaustive linter reimplementation).
