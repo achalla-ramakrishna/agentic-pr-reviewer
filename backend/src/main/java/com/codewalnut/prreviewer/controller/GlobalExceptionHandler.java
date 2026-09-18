@@ -4,6 +4,10 @@ import com.codewalnut.prreviewer.client.GitHubApiException;
 import com.codewalnut.prreviewer.client.GitHubAuthorizationException;
 import com.codewalnut.prreviewer.client.GitHubNotFoundException;
 import com.codewalnut.prreviewer.client.GitHubRateLimitException;
+import com.codewalnut.prreviewer.client.OpenAiApiException;
+import com.codewalnut.prreviewer.client.OpenAiAuthorizationException;
+import com.codewalnut.prreviewer.client.OpenAiRateLimitException;
+import com.codewalnut.prreviewer.llm.LlmResponseParseException;
 import com.codewalnut.prreviewer.service.NotFoundException;
 import java.util.Map;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -43,6 +47,32 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(GitHubApiException.class)
     public ResponseEntity<Map<String, String>> handleGitHubApiError(GitHubApiException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(OpenAiAuthorizationException.class)
+    public ResponseEntity<Map<String, String>> handleOpenAiAuth(OpenAiAuthorizationException ex) {
+        // The OpenAI key is server-side config, not caller input, so this is our
+        // operator's problem to fix -- 502, not 403 (which would blame the caller).
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(OpenAiRateLimitException.class)
+    public ResponseEntity<Map<String, String>> handleOpenAiRateLimit(OpenAiRateLimitException ex) {
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS);
+        if (ex.getRetryAfterSeconds() != null) {
+            builder.header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.getRetryAfterSeconds()));
+        }
+        return builder.body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(OpenAiApiException.class)
+    public ResponseEntity<Map<String, String>> handleOpenAiApiError(OpenAiApiException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(LlmResponseParseException.class)
+    public ResponseEntity<Map<String, String>> handleLlmResponseParseError(LlmResponseParseException ex) {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of("error", ex.getMessage()));
     }
 

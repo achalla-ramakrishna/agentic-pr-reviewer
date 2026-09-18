@@ -27,12 +27,23 @@ public final class PracticePatternCompiler {
 
     private PracticePatternCompiler() {}
 
+    /**
+     * True when this practice carries one of the sentinel prefixes admitting
+     * no regex can safely check it -- exactly the practices the LLM review
+     * pass (chunk 5) retrieves as context, since the rule engine skips them.
+     */
+    public static boolean isNonDeterministic(Practice practice) {
+        String detectionPattern = practice.getDetectionPattern();
+        return detectionPattern != null
+                && NON_DETERMINISTIC_PREFIXES.stream().anyMatch(detectionPattern::startsWith);
+    }
+
     public static Optional<Pattern> compile(Practice practice) {
         String detectionPattern = practice.getDetectionPattern();
         if (detectionPattern == null || detectionPattern.isBlank()) {
             return Optional.empty();
         }
-        if (NON_DETERMINISTIC_PREFIXES.stream().anyMatch(detectionPattern::startsWith)) {
+        if (isNonDeterministic(practice)) {
             return Optional.empty();
         }
         try {

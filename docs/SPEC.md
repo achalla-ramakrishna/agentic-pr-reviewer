@@ -96,7 +96,7 @@ app in a working state. Later chunks assume earlier ones are done.
    rule set, not an exhaustive linter reimplementation). ✅
 5. **LLM review pass** — OpenAI client, prompt built from diff + retrieved
    relevant practices (context engineering, not a full-repo dump),
-   structured output parsed into `Finding`s.
+   structured output parsed into `Finding`s. ✅
 6. **Review orchestrator** — merges rule + LLM findings, dedups by
    file/line/category, assigns `BOTH` where they agree, persists the
    `Review`, exposes the submit + fetch API end to end.
