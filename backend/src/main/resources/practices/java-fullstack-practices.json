@@ -4063,6 +4063,590 @@
               "detectionPattern": "NO_CLEAN_REGEX: test suite with no @SpringBootTest (or @ContextConfiguration) test verifying the application context itself loads"
             }
           ]
+        },
+        {
+          "name": "Web API Design",
+          "category": "STYLE",
+          "practices": [
+            {
+              "id": "SPRING-WEB-001",
+              "title": "Not using appropriate HTTP status codes for different outcomes",
+              "severity": "MEDIUM",
+              "description": "Returning 200 OK for every response regardless of outcome (embedding success/failure in the response body instead) forces every client to parse the body just to know whether a call succeeded, defeats HTTP-aware tooling (caches, monitoring, load balancers) that relies on status codes, and misses the standard vocabulary REST already provides for common cases (404, 409, 422, etc.).",
+              "risk": "A client has to inspect the response body just to learn whether the call succeeded, and HTTP-aware tooling like caches and load balancers that key off status codes can't do their job at all.",
+              "code": "@PostMapping(\"/orders\")\npublic ResponseEntity<ApiResponse> createOrder(@RequestBody OrderRequest req) {\n    if (!isValid(req)) {\n        return ResponseEntity.ok(new ApiResponse(false, \"Invalid order\")); // 200 OK for a validation failure\n    }\n    return ResponseEntity.ok(new ApiResponse(true, \"Created\")); // 200 OK even for a successful creation, instead of 201\n}",
+              "solution": "@PostMapping(\"/orders\")\npublic ResponseEntity<Order> createOrder(@Valid @RequestBody OrderRequest req) {\n    Order order = orderService.create(req);\n    return ResponseEntity.status(HttpStatus.CREATED).body(order); // 201 Created, with @Valid handling 400 automatically\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: controller method returning ResponseEntity.ok()/200 for a validation failure, creation, or error outcome that has a more specific standard status code available"
+            },
+            {
+              "id": "SPRING-WEB-002",
+              "title": "Not versioning REST APIs",
+              "severity": "MEDIUM",
+              "description": "Without any versioning strategy (URI path, header, or media-type based), a breaking change to an endpoint's request/response shape has no way to roll out gradually",
+              "risk": "every existing client breaks the instant the change deploys, with no path for old and new clients to coexist during a migration window.",
+              "code": "@RestController\n@RequestMapping(\"/orders\") // no version anywhere \u2014 any breaking change to the response shape breaks every existing client immediately\nclass OrderController { ... }",
+              "solution": "@RestController\n@RequestMapping(\"/v1/orders\") // versioned path \u2014 /v2/orders can be introduced alongside it for a breaking change, with both served during a migration window\nclass OrderControllerV1 { ... }",
+              "detectionPattern": "NO_CLEAN_REGEX: public REST API endpoint with no version segment in the URL path, version header, or versioned media type"
+            },
+            {
+              "id": "SPRING-WEB-003",
+              "title": "Returning inconsistent error response formats across different endpoints",
+              "severity": "MEDIUM",
+              "description": "If one endpoint's error handler returns {\"error\": \"message\"}, another returns {\"message\": \"...\", \"code\": 123}, and a third lets Spring's default whitelabel error page through, every client integration has to special-case error parsing per endpoint instead of relying on one predictable error contract across the whole API.",
+              "risk": "Every client integration has to special-case error parsing per endpoint instead of relying on one predictable error contract across the whole API.",
+              "code": "@ExceptionHandler(ValidationException.class)\npublic ResponseEntity<Map<String, String>> handleValidation(ValidationException e) {\n    return ResponseEntity.badRequest().body(Map.of(\"error\", e.getMessage())); // ad-hoc shape, defined locally in one controller\n}\n// A different controller elsewhere in the same app returns an entirely different JSON shape for its errors",
+              "solution": "@ControllerAdvice\nclass GlobalExceptionHandler {\n    @ExceptionHandler(ValidationException.class)\n    public ResponseEntity<ErrorResponse> handleValidation(ValidationException e) {\n        return ResponseEntity.badRequest().body(new ErrorResponse(\"VALIDATION_ERROR\", e.getMessage(), Instant.now()));\n    }\n    // every exception type across the whole API maps to the same ErrorResponse shape\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: more than one distinct JSON error response shape used across different controllers in the same API with no centralized @ControllerAdvice"
+            },
+            {
+              "id": "SPRING-WEB-004",
+              "title": "Using @RequestBody Map<String, Object> instead of typed DTOs",
+              "severity": "MEDIUM",
+              "description": "Accepting an untyped Map for a request body avoids writing a DTO class",
+              "risk": "gives up compile-time field checking, IDE autocomplete, and the automatic OpenAPI/Swagger documentation Spring generates from typed classes \u2014 every field access becomes a string-keyed lookup with no guarantee it exists or has the expected type.",
+              "code": "@PostMapping(\"/orders\")\npublic ResponseEntity<?> createOrder(@RequestBody Map<String, Object> body) {\n    String customerId = (String) body.get(\"customerId\"); // no compile-time safety, no validation, no generated API docs\n    ...\n}",
+              "solution": "record OrderRequest(@NotBlank String customerId, @NotEmpty List<LineItem> items) { }\n@PostMapping(\"/orders\")\npublic ResponseEntity<Order> createOrder(@Valid @RequestBody OrderRequest request) {\n    // compile-time-checked fields, automatic validation, self-documenting API\n}",
+              "detectionPattern": "@RequestBody\\s+Map<String,\\s*Object>"
+            },
+            {
+              "id": "SPRING-WEB-005",
+              "title": "Returning raw objects instead of ResponseEntity, losing explicit control over headers and status",
+              "severity": "LOW",
+              "description": "Returning a plain object lets Spring pick a default status (200 for a normal return) and leaves no easy way to set custom headers, cache-control directives, or a specific status code for different outcomes within the same method",
+              "risk": "ResponseEntity makes all of that explicit and controllable.",
+              "code": "@GetMapping(\"/orders/{id}\")\npublic Order getOrder(@PathVariable Long id) { // always 200, no way to set caching headers or return 404 for a missing order without throwing\n    return orderRepository.findById(id).orElse(null); // returns 200 with a null body if not found \u2014 misleading\n}",
+              "solution": "@GetMapping(\"/orders/{id}\")\npublic ResponseEntity<Order> getOrder(@PathVariable Long id) {\n    return orderRepository.findById(id)\n        .map(order -> ResponseEntity.ok().cacheControl(CacheControl.maxAge(Duration.ofMinutes(5))).body(order))\n        .orElseGet(() -> ResponseEntity.notFound().build()); // explicit 404, explicit caching",
+              "detectionPattern": "NO_CLEAN_REGEX: controller method returning a plain DTO/entity with .orElse(null) or similar, where ResponseEntity could express a distinct not-found/error outcome explicitly"
+            },
+            {
+              "id": "SPRING-WEB-006",
+              "title": "Missing Location header on 201 Created responses",
+              "severity": "LOW",
+              "description": "The HTTP spec and REST convention expect a 201 Created response to include a Location header pointing to the newly created resource's URL",
+              "risk": "omitting it forces clients to construct that URL themselves (often by guessing the ID field name and path structure) instead of simply following the header the server already knows.",
+              "code": "@PostMapping(\"/orders\")\npublic ResponseEntity<Order> createOrder(@Valid @RequestBody OrderRequest req) {\n    Order order = orderService.create(req);\n    return ResponseEntity.status(HttpStatus.CREATED).body(order); // 201, but no Location header pointing to /orders/{id}",
+              "solution": "@PostMapping(\"/orders\")\npublic ResponseEntity<Order> createOrder(@Valid @RequestBody OrderRequest req) {\n    Order order = orderService.create(req);\n    URI location = URI.create(\"/orders/\" + order.getId());\n    return ResponseEntity.created(location).body(order); // 201 with Location header set correctly",
+              "detectionPattern": "ResponseEntity\\.status\\(\\s*HttpStatus\\.CREATED\\s*\\)\\.body\\("
+            },
+            {
+              "id": "SPRING-WEB-007",
+              "title": "Not documenting API endpoints with OpenAPI/Swagger annotations",
+              "severity": "LOW",
+              "description": "Without OpenAPI annotations (or an equivalent generated spec), API consumers have no machine-readable contract to generate client SDKs from, no interactive documentation to explore, and no way to catch a mismatch between what the code actually does and what was verbally described, short of reading the controller source directly.",
+              "risk": "There's no way to catch a mismatch between what the code actually does and what was verbally described, short of reading the controller source directly.",
+              "code": "@PostMapping(\"/orders\")\npublic Order createOrder(@Valid @RequestBody OrderRequest req) { ... } // no @Operation/@ApiResponse annotations, no generated docs describing possible responses",
+              "solution": "@Operation(summary = \"Create a new order\")\n@ApiResponse(responseCode = \"201\", description = \"Order created\")\n@ApiResponse(responseCode = \"400\", description = \"Invalid order request\")\n@PostMapping(\"/orders\")\npublic Order createOrder(@Valid @RequestBody OrderRequest req) { ... } // self-documenting, generates accurate OpenAPI spec/Swagger UI",
+              "detectionPattern": "NO_CLEAN_REGEX: public-facing REST controller with no springdoc-openapi/Swagger annotations and no generated OpenAPI spec"
+            },
+            {
+              "id": "SPRING-WEB-008",
+              "title": "Returning a generic, unhelpful response when JSON request parsing fails",
+              "severity": "LOW",
+              "description": "A malformed JSON body throws HttpMessageNotReadableException",
+              "risk": "without a dedicated handler produces Spring's generic 400 response giving the client no indication of what specifically was wrong with their payload (a typo in a field name, a type mismatch, truncated JSON) \u2014 just that something, somewhere, didn't parse.",
+              "code": "// No @ExceptionHandler for HttpMessageNotReadableException \u2014 clients get Spring's default,\n// generic 400 response with a message like \"JSON parse error\" and no further detail",
+              "solution": "@ExceptionHandler(HttpMessageNotReadableException.class)\npublic ResponseEntity<ErrorResponse> handleMalformedJson(HttpMessageNotReadableException e) {\n    return ResponseEntity.badRequest().body(\n        new ErrorResponse(\"MALFORMED_REQUEST\", \"Request body could not be parsed: \" + e.getMostSpecificCause().getMessage(), Instant.now()));\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: no @ExceptionHandler (globally or per-controller) specifically for HttpMessageNotReadableException"
+            },
+            {
+              "id": "SPRING-WEB-009",
+              "title": "Using @PathVariable for optional or filterable criteria",
+              "severity": "LOW",
+              "description": "Path variables are meant to identify a specific resource (or resource hierarchy segment), not to express optional filtering criteria",
+              "risk": "using them for optional values forces multiple overlapping endpoint mappings (one with the segment, one without) to cover the 'not specified' case, where a single endpoint with @RequestParam would handle both naturally.",
+              "code": "@GetMapping(\"/orders/status/{status}\")\npublic List<Order> getOrdersByStatus(@PathVariable String status) { ... }\n@GetMapping(\"/orders\") // a SEPARATE mapping just to cover the 'no status filter' case\npublic List<Order> getAllOrders() { ... }",
+              "solution": "@GetMapping(\"/orders\")\npublic List<Order> getOrders(@RequestParam(required = false) String status) { // one endpoint, filter is naturally optional\n    return status != null ? orderService.findByStatus(status) : orderService.findAll();\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: two or more @GetMapping paths on the same resource differing only by presence/absence of a path segment representing an optional filter"
+            },
+            {
+              "id": "SPRING-WEB-010",
+              "title": "Inconsistent naming/casing conventions across REST endpoint paths and JSON fields",
+              "severity": "LOW",
+              "description": "Mixing camelCase and snake_case (or kebab-case and underscores) across different endpoints' paths and JSON field names forces every client integration to remember which convention applies where, with no way to guess correctly",
+              "risk": "a small thing that adds friction to every single API interaction across the whole surface area.",
+              "code": "GET /api/customerOrders/{orderId} -> { \"order_id\": 1, \"customerName\": \"Alice\" } // path uses camelCase, one field is snake_case, another is camelCase \u2014 no consistent rule",
+              "solution": "GET /api/customer-orders/{orderId} -> { \"orderId\": 1, \"customerName\": \"Alice\" } // kebab-case paths, camelCase JSON fields, applied uniformly across the entire API",
+              "detectionPattern": "NO_CLEAN_REGEX: a mix of casing conventions (camelCase, snake_case, kebab-case) across different endpoint paths or JSON field names in the same API"
+            },
+            {
+              "id": "SPRING-WEB-011",
+              "title": "Implementing HTTP method override via a query parameter/header instead of using the correct verb directly",
+              "severity": "LOW",
+              "description": "Method override (e.g. a _method=DELETE query parameter, common historically to work around HTML forms that can't send DELETE/PUT) adds an unnecessary layer of indirection for a server-to-server or modern JS-client API that can simply issue the correct HTTP verb natively",
+              "risk": "keeping it around without that legacy constraint just adds a second, less obvious way to trigger the same behavior.",
+              "code": "@PostMapping(\"/orders/{id}\") // accepts POST with a hidden method-override parameter to simulate DELETE\npublic void deleteOrder(@PathVariable Long id, @RequestParam(\"_method\") String method) {\n    if (\"DELETE\".equals(method)) {\n        orderService.delete(id);\n    }\n}",
+              "solution": "@DeleteMapping(\"/orders/{id}\") // the actual HTTP verb, matching intent directly \u2014 no override indirection needed\npublic void deleteOrder(@PathVariable Long id) {\n    orderService.delete(id);\n}",
+              "detectionPattern": "@RequestParam\\(\\s*\\\"_method\\\"\\s*\\)|X-HTTP-Method-Override"
+            },
+            {
+              "id": "SPRING-WEB-012",
+              "title": "Not standardizing error handling across multiple microservices in the same system",
+              "severity": "MEDIUM",
+              "description": "If each microservice in a system independently invents its own @ControllerAdvice error format, any client (or API gateway) that talks to more than one of them has to implement separate error-parsing logic per service, and cross-service tracing/correlation becomes harder since there's no shared error contract to rely on.",
+              "risk": "Any client or API gateway that talks to more than one service needs a separate error-parsing implementation per service, and cross-service tracing becomes harder with no shared error contract.",
+              "code": "// Service A returns: { \"error\": \"message\" }\n// Service B returns: { \"code\": 123, \"detail\": \"...\" }\n// Service C returns Spring's default whitelabel error body\n// A single API gateway or client calling all three needs three different error-parsing implementations",
+              "solution": "// A shared library defines one ErrorResponse DTO and a base GlobalExceptionHandler that every\n// microservice in the organization extends/reuses, ensuring one consistent error contract system-wide.",
+              "detectionPattern": "NO_CLEAN_REGEX: different microservices in the same system returning different JSON error response shapes with no shared contract or common library"
+            },
+            {
+              "id": "SPRING-WEB-013",
+              "title": "Combining multiple unrelated resources into a single catch-all endpoint",
+              "severity": "MEDIUM",
+              "description": "An endpoint like POST /api/execute or GET /api/data that takes an 'action' or 'type' parameter and branches internally to handle entirely unrelated operations abandons REST's resource-oriented design entirely",
+              "risk": "the API impossible to document, cache, authorize, or rate-limit sensibly per operation, since everything funnels through one undifferentiated URL.",
+              "code": "@PostMapping(\"/api/execute\")\npublic ResponseEntity<?> execute(@RequestBody Map<String, Object> req) {\n    String action = (String) req.get(\"action\");\n    switch (action) { // one endpoint secretly implementing createOrder, cancelOrder, updateProfile, sendEmail...\n        case \"createOrder\": return createOrder(req);\n        case \"cancelOrder\": return cancelOrder(req);\n        // ...\n    }\n}",
+              "solution": "@PostMapping(\"/orders\") public Order createOrder(...) { ... }\n@PostMapping(\"/orders/{id}/cancel\") public void cancelOrder(...) { ... }\n@PutMapping(\"/profile\") public Profile updateProfile(...) { ... }\n// Each operation has its own resource-oriented, individually documentable, individually rate-limitable endpoint",
+              "detectionPattern": "String\\s+action\\s*=\\s*\\(String\\)\\s*\\w+\\.get\\(\\s*\\\"action\\\"\\s*\\)"
+            },
+            {
+              "id": "SPRING-WEB-014",
+              "title": "Not documenting or enforcing required vs optional query parameters",
+              "severity": "LOW",
+              "description": "Leaving @RequestParam's required attribute at its implicit default and never documenting whether a given query parameter is mandatory means clients discover the actual requirement by trial and error",
+              "risk": "a missing 'required' parameter either throws a confusing 400 with no clear message, or worse, silently falls through to unintended default behavior.",
+              "code": "@GetMapping(\"/orders\")\npublic List<Order> getOrders(@RequestParam String customerId) { // implicitly required, but nowhere documented as such\n    return orderService.findByCustomer(customerId);\n}\n// Omitting customerId throws Spring's generic \"required parameter is not present\" error",
+              "solution": "@Operation(summary = \"List orders for a customer\")\n@Parameter(name = \"customerId\", required = true, description = \"The customer's unique identifier\")\n@GetMapping(\"/orders\")\npublic List<Order> getOrders(@RequestParam String customerId) {\n    return orderService.findByCustomer(customerId);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: @RequestParam with no explicit required attribute and no accompanying documentation stating whether omitting it is valid"
+            },
+            {
+              "id": "SPRING-WEB-015",
+              "title": "Inconsistent handling of 'no results' across similar endpoints",
+              "severity": "LOW",
+              "description": "If one list endpoint returns 200 with an empty array when nothing matches, while a similar endpoint elsewhere in the same API returns 404 for the same kind of 'nothing found' situation, clients can't apply one consistent error-handling rule across the API",
+              "risk": "they have to special-case each endpoint's specific convention.",
+              "code": "@GetMapping(\"/orders\") // returns 200 + [] when no orders match the filter\npublic List<Order> getOrders(@RequestParam String customerId) { return orderService.findByCustomer(customerId); }\n@GetMapping(\"/invoices\") // returns 404 when no invoices match \u2014 a DIFFERENT convention for the same kind of situation\npublic List<Invoice> getInvoices(@RequestParam String customerId) {\n    List<Invoice> result = invoiceService.findByCustomer(customerId);\n    if (result.isEmpty()) throw new NotFoundException();\n    return result;\n}",
+              "solution": "// Applied consistently across the whole API: a list endpoint with no matches returns 200 + [] (the collection\n// exists, it's just empty); 404 is reserved for a SPECIFIC single resource lookup by ID that doesn't exist.\n@GetMapping(\"/orders\") public List<Order> getOrders(...) { return orderService.findByCustomer(customerId); } // 200 + []\n@GetMapping(\"/orders/{id}\") public Order getOrder(@PathVariable Long id) { return orderService.findById(id).orElseThrow(NotFoundException::new); } // 404 for a specific missing resource",
+              "detectionPattern": "NO_CLEAN_REGEX: similar list-returning endpoints differing in whether an empty result returns 200 with an empty collection or a 404"
+            },
+            {
+              "id": "SPRING-WEB-016",
+              "title": "Returning different DTO shapes for the same logical resource across different endpoints",
+              "severity": "LOW",
+              "description": "If GET /orders/{id} returns an Order with a status field as a string enum name",
+              "risk": "GET /orders (the list version) returns a differently-shaped OrderSummary with status as a numeric code, clients working with 'the same' resource across two endpoints have to handle two incompatible representations of the same underlying concept, multiplying integration effort for no real benefit.",
+              "code": "@GetMapping(\"/orders/{id}\")\npublic OrderDetail getOrder(...) { return new OrderDetail(order.getStatus().name(), ...); } // status as a String\n@GetMapping(\"/orders\")\npublic List<OrderSummary> getOrders(...) { return orders.stream().map(o -> new OrderSummary(o.getStatus().ordinal(), ...)).toList(); } // status as an int \u2014 same field, different representation",
+              "solution": "// Both DTOs represent 'status' the same way (as the enum's String name), even though OrderSummary\n// legitimately omits other detail fields that OrderDetail includes:\nrecord OrderDetail(String status, List<LineItem> items, ...) { }\nrecord OrderSummary(String status, BigDecimal total) { } // same status representation, just fewer fields",
+              "detectionPattern": "NO_CLEAN_REGEX: two or more DTOs representing the same logical resource concept using different types or encodings for what should be the same field"
+            },
+            {
+              "id": "SPRING-WEB-017",
+              "title": "Not supporting HEAD requests for resource-existence checks",
+              "severity": "LOW",
+              "description": "HEAD is defined to return exactly the headers a GET would, with no body",
+              "risk": "a client that only wants to check whether a resource exists (or get its size/last-modified date) has to fetch the entire body via GET if HEAD isn't supported, wasting bandwidth and processing for information a HEAD response could have provided far more cheaply.",
+              "code": "@GetMapping(\"/documents/{id}\") // the only way to check if a document exists is downloading its entire content via GET\npublic ResponseEntity<byte[]> getDocument(@PathVariable Long id) { ... }",
+              "solution": "// Spring automatically supports HEAD for any @GetMapping unless explicitly disabled, as long as the\n// handler doesn't rely on writing directly to the response body in a way that bypasses this \u2014 verify\n// with a HEAD request that only headers (and no body) come back for resource-existence checks.\n@GetMapping(\"/documents/{id}\")\npublic ResponseEntity<byte[]> getDocument(@PathVariable Long id) { ... } // HEAD /documents/{id} works automatically",
+              "detectionPattern": "NO_CLEAN_REGEX: client need to check resource existence/metadata without downloading content, with no verification that HEAD is actually supported"
+            },
+            {
+              "id": "SPRING-WEB-018",
+              "title": "Removing or breaking old API endpoints without a deprecation period",
+              "severity": "MEDIUM",
+              "description": "Deleting or changing an existing endpoint's behavior in the same release that removes the old version gives consumers zero warning and zero time to migrate",
+              "risk": "a deprecation period (marking the endpoint deprecated, communicating a sunset date, ideally via a Deprecation/Sunset HTTP header) lets clients migrate on their own schedule instead of breaking without notice.",
+              "code": "// v1.5 release notes: \"Removed /v1/orders/search (replaced by /v2/orders/search)\" \u2014 with no prior deprecation\n// warning in v1.4, so every client still using the old endpoint breaks the moment v1.5 deploys",
+              "solution": "// v1.4: /v1/orders/search still works, but responses include Deprecation: true and Sunset: <date> headers,\n// and release notes clearly state the removal date, giving clients a defined migration window\n// v1.5+ (after the sunset date): endpoint is removed, as previously announced",
+              "detectionPattern": "NO_CLEAN_REGEX: endpoint removal or breaking behavior change in a changelog with no corresponding prior deprecation notice or Deprecation/Sunset headers"
+            },
+            {
+              "id": "SPRING-WEB-019",
+              "title": "Using @RequestParam Map<String, String> to accept arbitrary, unbounded query parameters",
+              "severity": "MEDIUM",
+              "description": "Binding all query parameters into an open-ended Map gives up any control over which parameters are actually valid, how many can be supplied, or what they mean",
+              "risk": "a client can send hundreds of unexpected parameters, and there's no schema, validation, or documentation describing what's actually accepted.",
+              "code": "@GetMapping(\"/search\")\npublic List<Result> search(@RequestParam Map<String, String> allParams) { // no defined contract \u2014 anything goes\n    return searchService.search(allParams);\n}",
+              "solution": "@GetMapping(\"/search\")\npublic List<Result> search(@RequestParam(required = false) String query,\n                             @RequestParam(required = false) String category,\n                             @RequestParam(defaultValue = \"0\") int page) { // explicit, documented, boundable parameters\n    return searchService.search(query, category, page);\n}",
+              "detectionPattern": "@RequestParam\\s+Map<String,\\s*String>|@RequestParam\\s+MultiValueMap<"
+            },
+            {
+              "id": "SPRING-WEB-020",
+              "title": "Inconsistent trailing-slash handling across endpoints",
+              "severity": "LOW",
+              "description": "Depending on configuration, /orders and /orders/ can either be treated as identical or as entirely distinct mappings",
+              "risk": "if this isn't handled consistently, clients get confusing 404s for a URL that looks functionally identical to one that works, with no clear rule for which form is 'correct'.",
+              "code": "@GetMapping(\"/orders\") // works\npublic List<Order> getOrders() { ... }\n// Depending on Spring Boot version/configuration, GET /orders/ (trailing slash) may 404 unexpectedly,\n// with no documented rule telling clients which form to use",
+              "solution": "// Pick and document one convention (typically: no trailing slash), and verify the application's\n// actual configuration (useTrailingSlashMatch or equivalent) matches that documented choice consistently\n// across the whole API, rather than leaving it to incidental framework defaults.",
+              "detectionPattern": "NO_CLEAN_REGEX: API documentation or client-reported 404s caused by a trailing-slash mismatch with no consistent, documented policy"
+            },
+            {
+              "id": "SPRING-WEB-021",
+              "title": "Inconsistent date/time formats across different endpoints",
+              "severity": "MEDIUM",
+              "description": "If one endpoint returns dates as ISO-8601 strings, another as epoch milliseconds, and a third as a custom 'MM/dd/yyyy' string, every client integration needs separate parsing logic per endpoint, and it's easy to introduce timezone or format bugs when the convention isn't uniform across the API.",
+              "risk": "Every client integration needs separate parsing logic per endpoint, and it's easy to introduce timezone or format bugs when the convention isn't uniform.",
+              "code": "// GET /orders/{id} -> { \"createdAt\": \"2026-09-17T10:00:00Z\" } // ISO-8601\n// GET /invoices/{id} -> { \"createdAt\": 1758100800000 } // epoch millis, same conceptual field, different encoding",
+              "solution": "// Every endpoint in the API encodes date/time fields the same way, uniformly:\n// GET /orders/{id} -> { \"createdAt\": \"2026-09-17T10:00:00Z\" }\n// GET /invoices/{id} -> { \"createdAt\": \"2026-09-17T10:00:00Z\" } // same ISO-8601 convention, everywhere",
+              "detectionPattern": "NO_CLEAN_REGEX: different date/time field encodings (ISO-8601, epoch millis, custom string) used across multiple endpoints in the same API"
+            },
+            {
+              "id": "SPRING-WEB-022",
+              "title": "Not applying @JsonFormat/@DateTimeFormat consistently across DTOs",
+              "severity": "LOW",
+              "description": "Without explicit format annotations, date/time serialization behavior depends on Jackson's default configuration (which can itself change between library versions or global ObjectMapper customizations)",
+              "risk": "relying on that implicit default per-field, rather than declaring the format explicitly on each date field, risks silent format changes when shared configuration is touched for an unrelated reason.",
+              "code": "class OrderDto {\n    private LocalDateTime createdAt; // format entirely dependent on global Jackson configuration, not declared here at all\n}",
+              "solution": "class OrderDto {\n    @JsonFormat(pattern = \"yyyy-MM-dd'T'HH:mm:ss'Z'\", timezone = \"UTC\") // explicit, self-documenting, immune to global config changes\n    private LocalDateTime createdAt;\n}",
+              "detectionPattern": "NO_ANNOTATION_HEURISTIC: date/time-typed DTO field (not a JPA @Entity field, which is never directly serialized) with no @JsonFormat/@DateTimeFormat annotation"
+            },
+            {
+              "id": "SPRING-WEB-023",
+              "title": "Not including a correlation/trace ID in response headers or error bodies",
+              "severity": "LOW",
+              "description": "When a client reports 'my request failed', without a trace/correlation ID surfaced to them there's no efficient way to find the exact corresponding server-side log entries among potentially millions of requests",
+              "risk": "support and debugging end up guessing based on approximate timestamps instead of a precise, shared identifier.",
+              "code": "// Error responses contain only a generic message, with no request/trace ID a client could report back:\n{ \"error\": \"Internal server error\" }",
+              "solution": "{ \"error\": \"Internal server error\", \"traceId\": \"a1b2c3d4-...\" }\n// Also included as a response header (e.g. X-Trace-Id), matching the ID used in server-side structured logs for that request",
+              "detectionPattern": "NO_CLEAN_REGEX: error response body/headers with no trace or correlation ID field, in an application with distributed tracing or structured logging already available"
+            },
+            {
+              "id": "SPRING-WEB-024",
+              "title": "Reusing a single DTO for both create and update operations despite differing field requirements",
+              "severity": "MEDIUM",
+              "description": "A create operation typically forbids the client from supplying an ID (the server assigns it), while an update operation requires one",
+              "risk": "sharing one DTO class for both means either the ID field's required-ness can't be validated consistently, or the code has to add conditional, operation-aware validation logic that a dedicated DTO per operation would avoid entirely.",
+              "code": "record OrderRequest(Long id, String customerId, List<LineItem> items) { } // used for BOTH create and update\n@PostMapping(\"/orders\")\npublic Order create(@RequestBody OrderRequest req) { /* must remember to ignore/reject req.id() here */ }\n@PutMapping(\"/orders/{id}\")\npublic Order update(@PathVariable Long id, @RequestBody OrderRequest req) { /* uses req.id() inconsistently with the path id */ }",
+              "solution": "record CreateOrderRequest(@NotBlank String customerId, @NotEmpty List<LineItem> items) { } // no id field at all \u2014 impossible to misuse\nrecord UpdateOrderRequest(@NotEmpty List<LineItem> items) { } // id comes from the path variable, not duplicated in the body\n@PostMapping(\"/orders\") public Order create(@Valid @RequestBody CreateOrderRequest req) { ... }\n@PutMapping(\"/orders/{id}\") public Order update(@PathVariable Long id, @Valid @RequestBody UpdateOrderRequest req) { ... }",
+              "detectionPattern": "NO_CLEAN_REGEX: the same DTO class used as the @RequestBody type for both a POST (create) and PUT/PATCH (update) endpoint on the same resource with genuinely different field requirements"
+            },
+            {
+              "id": "SPRING-WEB-025",
+              "title": "Not verifying consumer-driven API contracts before deploying breaking changes",
+              "severity": "MEDIUM",
+              "description": "Without some form of contract testing (Pact, Spring Cloud Contract, or even a shared, versioned schema checked in CI) between an API's provider and its consumers, a change that looks harmless from the provider's side (renaming a field, tightening a validation rule) can silently break every consumer, discovered only when they start failing in production rather than caught before merge.",
+              "risk": "A change that looks harmless from the provider's side can silently break every consumer, discovered only when they start failing in production instead of being caught before merge.",
+              "code": "// The order-service team renames a response field from \"total\" to \"totalAmount\" and ships it.\n// No contract test catches this; the frontend and two downstream services all break simultaneously in production.",
+              "solution": "// A Pact/Spring Cloud Contract test, generated from and verified against the consumer's actual expectations,\n// runs in the order-service's CI pipeline and fails the build BEFORE the breaking field rename ships.",
+              "detectionPattern": "NO_CLEAN_REGEX: CI pipeline for an API with multiple independent consumers with no consumer-driven contract verification step"
+            },
+            {
+              "id": "SPRING-WEB-026",
+              "title": "Inconsistent null vs field-omission convention in JSON responses",
+              "severity": "LOW",
+              "description": "If some fields with no value are serialized as null while others (perhaps due to differing Jackson inclusion settings on different DTOs) are omitted entirely from the JSON object, clients can't apply one consistent rule ('check for null' vs 'check if the key exists') across the whole API, and strongly-typed client languages in particular can behave very differently depending on which convention a given response happens to follow.",
+              "risk": "Clients can't apply one consistent rule across the API, and strongly-typed client languages behave very differently depending on which convention a given response happens to follow.",
+              "code": "class OrderDto { // default Jackson behavior: absent fields serialize as explicit null\n    private String discountCode; // null when not applicable -> {\"discountCode\": null, ...}\n}\nclass InvoiceDto {\n    @JsonInclude(JsonInclude.Include.NON_NULL) // configured differently \u2014 omits the key entirely instead\n    private String discountCode; // -> key is simply missing from the JSON object when null\n}",
+              "solution": "// One convention applied consistently via a shared Jackson ObjectMapper configuration\n// (e.g. globally set to NON_NULL, or explicitly documented as \"always present, use null for absence\"),\n// so every DTO in the API behaves the same way for missing/optional values.",
+              "detectionPattern": "NO_CLEAN_REGEX: some JSON responses in the API using explicit null for absent data while others omit the key entirely, with no shared documented convention"
+            }
+          ]
+        },
+        {
+          "name": "Web Correctness",
+          "category": "CORRECTNESS",
+          "practices": [
+            {
+              "id": "SPRING-WEBCORR-001",
+              "title": "Using GET requests with side effects",
+              "severity": "HIGH",
+              "description": "GET is defined by HTTP semantics as safe (no side effects) and idempotent",
+              "risk": "a GET endpoint that mutates state (increments a counter, deletes a record, sends an email) can be triggered unintentionally by browser prefetching, link crawlers, proxies, or automated retries, none of which expect GET to change anything.",
+              "code": "@GetMapping(\"/orders/{id}/cancel\") // mutates state via a GET \u2014 a crawler or browser prefetch could accidentally cancel orders\npublic void cancelOrder(@PathVariable Long id) {\n    orderService.cancel(id);\n}",
+              "solution": "@PostMapping(\"/orders/{id}/cancel\") // POST (or DELETE, depending on semantics) correctly signals this has side effects\npublic void cancelOrder(@PathVariable Long id) {\n    orderService.cancel(id);\n}",
+              "detectionPattern": "@GetMapping\\([^)]*\\)\\s*\\n\\s*(?:public\\s+)?[\\w<>\\[\\]]+\\s+\\w+\\([^)]*\\)\\s*\\{(?:(?!\\}).)*?\\.(?:save|update|delete|cancel|remove)\\("
+            },
+            {
+              "id": "SPRING-WEBCORR-002",
+              "title": "Not handling Content-Type/Accept negotiation explicitly, causing unexpected 406/415 errors",
+              "severity": "LOW",
+              "description": "If a client sends an unexpected (but reasonable) Content-Type or Accept header and the controller's produces/consumes attributes are too narrowly or inconsistently specified, Spring returns a 406 Not Acceptable or 415 Unsupported Media Type with a generic error page, confusing clients who don't understand why a seemingly valid request was rejected.",
+              "risk": "Clients don't understand why a seemingly valid request was rejected, since the response is a generic error page with no indication of what content type was actually expected.",
+              "code": "@PostMapping(value = \"/orders\") // no explicit consumes/produces \u2014 behavior depends entirely on default configuration and can surprise clients\npublic Order createOrder(@RequestBody OrderRequest req) { ... }",
+              "solution": "@PostMapping(value = \"/orders\", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE) // explicit, predictable content negotiation\npublic Order createOrder(@RequestBody OrderRequest req) { ... }\n// Combined with a @ControllerAdvice handler for HttpMediaTypeNotAcceptableException/HttpMediaTypeNotSupportedException that returns a clear, consistent error body",
+              "detectionPattern": "NO_CLEAN_REGEX: controller with no explicit consumes/produces attributes, causing unexpected 406/415 errors for reasonable client requests"
+            },
+            {
+              "id": "SPRING-WEBCORR-003",
+              "title": "Ignoring idempotency for POST endpoints that should be safe to retry",
+              "severity": "HIGH",
+              "description": "Network failures mean clients sometimes can't tell whether a request actually reached the server before the connection dropped",
+              "risk": "they retry; a POST endpoint with a real-world side effect (creating a payment, sending an order) and no idempotency mechanism processes that retry as a brand-new, separate operation, potentially charging a customer twice or creating duplicate orders.",
+              "code": "@PostMapping(\"/payments\")\npublic Payment createPayment(@RequestBody PaymentRequest req) {\n    return paymentService.charge(req); // a client retry after a timeout creates a SECOND, duplicate charge\n}",
+              "solution": "@PostMapping(\"/payments\")\npublic Payment createPayment(@RequestHeader(\"Idempotency-Key\") String idempotencyKey, @RequestBody PaymentRequest req) {\n    return paymentService.chargeIdempotently(idempotencyKey, req); // a retry with the same key returns the original result instead of charging again\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: POST endpoint performing a financially or otherwise consequentially significant, non-idempotent operation with no idempotency-key mechanism"
+            },
+            {
+              "id": "SPRING-WEBCORR-004",
+              "title": "Using PUT for partial updates instead of PATCH",
+              "severity": "MEDIUM",
+              "description": "PUT is conventionally understood as a full replacement of the resource",
+              "risk": "a PUT handler that treats its request body as a partial update (only applying the fields present) invites callers to send a full representation and then be confused when fields they omitted got wiped out to null/default, because the server's actual behavior doesn't match PUT's expected semantics.",
+              "code": "@PutMapping(\"/orders/{id}\")\npublic Order updateOrder(@PathVariable Long id, @RequestBody OrderUpdateRequest req) {\n    Order order = orderRepository.findById(id).orElseThrow();\n    if (req.getStatus() != null) order.setStatus(req.getStatus()); // partial-update logic hiding behind a PUT endpoint\n    return orderRepository.save(order);\n}\n// A client sending only {\"status\": \"SHIPPED\"} might reasonably (but wrongly, for PUT) expect other fields to be unaffected \u2014 or wiped, depending on which convention the client assumed",
+              "solution": "@PatchMapping(\"/orders/{id}\") // signals partial-update semantics correctly\npublic Order updateOrderStatus(@PathVariable Long id, @RequestBody OrderUpdateRequest req) {\n    Order order = orderRepository.findById(id).orElseThrow();\n    if (req.getStatus() != null) order.setStatus(req.getStatus());\n    return orderRepository.save(order);\n}\n@PutMapping(\"/orders/{id}\") // reserved for genuine full-resource replacement\npublic Order replaceOrder(@PathVariable Long id, @RequestBody OrderRequest req) { ... }",
+              "detectionPattern": "@PutMapping\\([^)]*\\)\\s*\\n\\s*(?:public\\s+)?[\\w<>\\[\\],\\s]+\\s+\\w+\\([^)]*\\)\\s*\\{(?:(?!\\}).)*?if\\s*\\([^)]*get\\w+\\(\\)\\s*!=\\s*null\\s*\\)"
+            },
+            {
+              "id": "SPRING-WEBCORR-005",
+              "title": "Not validating path variable format/type explicitly",
+              "severity": "LOW",
+              "description": "A @PathVariable Long id automatically returns a 400 for a non-numeric value",
+              "risk": "the default message is generic and unhelpful ('Failed to convert value of type java.lang.String'); for path variables with more specific format requirements (a UUID, a specific ID pattern), leaving validation entirely to type conversion misses the chance to give a clear, specific error before it hits deeper logic.",
+              "code": "@GetMapping(\"/orders/{id}\")\npublic Order getOrder(@PathVariable String id) {\n    return orderRepository.findById(UUID.fromString(id)).orElseThrow(); // IllegalArgumentException on a malformed UUID surfaces as a generic 500, not a clear 400",
+              "solution": "@GetMapping(\"/orders/{id}\")\npublic Order getOrder(@PathVariable @Pattern(regexp = \"[0-9a-fA-F-]{36}\") String id) { // validated at the boundary, with a clear 400 on mismatch\n    return orderRepository.findById(UUID.fromString(id)).orElseThrow();\n}\n// Paired with a @ExceptionHandler(ConstraintViolationException.class) returning a clear, specific error message",
+              "detectionPattern": "NO_CLEAN_REGEX: @PathVariable value parsed/converted (UUID.fromString(), custom parsing) inside the controller/service body with no upfront format validation"
+            },
+            {
+              "id": "SPRING-WEBCORR-006",
+              "title": "Conflicting status codes between @ResponseStatus on an exception class and an @ExceptionHandler for the same exception",
+              "severity": "MEDIUM",
+              "description": "If an exception class is annotated @ResponseStatus(NOT_FOUND) but a @ControllerAdvice also has an @ExceptionHandler for that same exception type returning a different status, the actual behavior depends on Spring's resolution precedence rules rather than either author's clear intent",
+              "risk": "the real status code a matter of implementation detail nobody explicitly decided.",
+              "code": "@ResponseStatus(HttpStatus.NOT_FOUND) // declares 404 at the exception class level\nclass OrderNotFoundException extends RuntimeException { ... }\n@ExceptionHandler(OrderNotFoundException.class)\nResponseEntity<ErrorResponse> handle(OrderNotFoundException e) {\n    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(...); // conflicting 400 defined elsewhere \u2014 which one actually wins?",
+              "solution": "class OrderNotFoundException extends RuntimeException { ... } // no @ResponseStatus \u2014 the handler is the single source of truth\n@ExceptionHandler(OrderNotFoundException.class)\nResponseEntity<ErrorResponse> handle(OrderNotFoundException e) {\n    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(...); // one clear, unambiguous place deciding the status\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: an exception class carrying @ResponseStatus while a @ControllerAdvice/@ExceptionHandler elsewhere also handles the same exception type with a different status code"
+            },
+            {
+              "id": "SPRING-WEBCORR-007",
+              "title": "Custom servlet filters interfering with CORS preflight handling",
+              "severity": "MEDIUM",
+              "description": "A hand-written filter that runs security/auth checks before Spring's CORS handling can process an OPTIONS preflight request will reject that preflight (since it typically carries no auth token), causing the browser to block the actual request entirely",
+              "risk": "even though the real request, if it had been allowed through, might have succeeded.",
+              "code": "@Component\nclass AuthFilter implements Filter {\n    public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) {\n        if (!isAuthenticated((HttpServletRequest) req)) { // runs for EVERY request, including OPTIONS preflights, which never carry auth headers\n            ((HttpServletResponse) res).sendError(401);\n            return;\n        }\n        chain.doFilter(req, res);\n    }\n}",
+              "solution": "@Component\nclass AuthFilter implements Filter {\n    public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) {\n        HttpServletRequest httpReq = (HttpServletRequest) req;\n        if (\"OPTIONS\".equals(httpReq.getMethod())) { // let CORS preflight requests through untouched\n            chain.doFilter(req, res);\n            return;\n        }\n        if (!isAuthenticated(httpReq)) { ((HttpServletResponse) res).sendError(401); return; }\n        chain.doFilter(req, res);\n    }\n}",
+              "detectionPattern": "doFilter\\([^)]*\\)\\s*\\{(?:(?!\\\"OPTIONS\\\")(?!\\}).)*?(?:isAuthenticated|sendError)\\("
+            },
+            {
+              "id": "SPRING-WEBCORR-008",
+              "title": "Not specifying a default, deterministic sort order for list endpoints",
+              "severity": "MEDIUM",
+              "description": "A query with no ORDER BY clause has no guaranteed row order from the database's perspective",
+              "risk": "a list endpoint that doesn't apply a default sort can return results in a different order between otherwise-identical requests (especially across pagination pages), causing items to appear duplicated or missing as a client pages through results.",
+              "code": "@GetMapping(\"/orders\")\npublic Page<Order> getOrders(Pageable pageable) { // no default Sort \u2014 page-to-page ordering isn't guaranteed to be stable\n    return orderRepository.findAll(pageable);\n}",
+              "solution": "@GetMapping(\"/orders\")\npublic Page<Order> getOrders(@PageableDefault(sort = \"id\", direction = Sort.Direction.ASC) Pageable pageable) { // stable, deterministic order by default\n    return orderRepository.findAll(pageable);\n}",
+              "detectionPattern": "NO_ANNOTATION_HEURISTIC: Pageable-based list endpoint parameter with no @PageableDefault sort specified"
+            },
+            {
+              "id": "SPRING-WEBCORR-009",
+              "title": "Using HttpSession/@SessionAttributes in an otherwise stateless REST API",
+              "severity": "HIGH",
+              "description": "REST APIs are conventionally stateless",
+              "risk": "each request carries everything needed to process it (typically via a token), which is exactly what lets them scale horizontally behind a load balancer with no session affinity required. Storing per-user state in HttpSession reintroduces server-side session state, forcing sticky sessions or shared session storage just to keep working across multiple instances.",
+              "code": "@PostMapping(\"/cart/items\")\npublic void addToCart(@RequestBody Item item, HttpSession session) {\n    List<Item> cart = (List<Item>) session.getAttribute(\"cart\"); // server-side session state \u2014 breaks if this request lands on a different instance next time\n    cart.add(item);\n}",
+              "solution": "@PostMapping(\"/carts/{cartId}/items\")\npublic void addToCart(@PathVariable String cartId, @RequestBody Item item) {\n    cartService.addItem(cartId, item); // cart state lives in a shared store (database/Redis), any instance can serve any request\n}",
+              "detectionPattern": "HttpSession\\s+\\w+\\)|@SessionAttributes\\("
+            },
+            {
+              "id": "SPRING-WEBCORR-010",
+              "title": "Manually streaming a response body without setting correct Content-Length/Transfer-Encoding",
+              "severity": "MEDIUM",
+              "description": "Writing directly to the response's OutputStream without either setting an accurate Content-Length upfront or properly using chunked Transfer-Encoding can cause clients to hang waiting for more data (if the client expects a specific length that never arrives) or truncate the response early.",
+              "risk": "Clients can hang waiting for more data that never arrives, or the response gets truncated early, depending on framework/container-specific defaults nobody explicitly chose.",
+              "code": "@GetMapping(\"/export\")\npublic void export(HttpServletResponse response) throws IOException {\n    OutputStream out = response.getOutputStream(); // no Content-Length set, no explicit chunked encoding either\n    for (Record r : hugeDataset) { out.write(r.toBytes()); } // client behavior on exactly how this terminates is now framework/container-dependent\n}",
+              "solution": "@GetMapping(\"/export\")\npublic ResponseEntity<StreamingResponseBody> export() {\n    StreamingResponseBody body = out -> {\n        for (Record r : hugeDataset) { out.write(r.toBytes()); }\n    };\n    return ResponseEntity.ok()\n        .header(HttpHeaders.TRANSFER_ENCODING, \"chunked\") // explicit, correct framing for an unknown-length stream\n        .body(body);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: manual HttpServletResponse.getOutputStream() usage for a large/streamed response with no explicit Content-Length or chunked Transfer-Encoding configuration"
+            },
+            {
+              "id": "SPRING-WEBCORR-011",
+              "title": "Not setting a timeout on async controller methods",
+              "severity": "HIGH",
+              "description": "A controller method returning DeferredResult, Callable, or WebAsyncTask holds the underlying HTTP request open until it completes",
+              "risk": "with no timeout configured, a slow or stuck downstream dependency can leave that request (and the container thread capacity it ties up) hanging indefinitely, exactly the kind of unbounded wait a timeout exists to prevent.",
+              "code": "@GetMapping(\"/report\")\npublic DeferredResult<Report> getReport() {\n    DeferredResult<Report> result = new DeferredResult<>(); // no timeout \u2014 hangs forever if reportService never completes\n    reportService.generateAsync().thenAccept(result::setResult);\n    return result;\n}",
+              "solution": "@GetMapping(\"/report\")\npublic DeferredResult<Report> getReport() {\n    DeferredResult<Report> result = new DeferredResult<>(30_000L, ResponseEntity.status(504).build()); // explicit timeout with a defined fallback\n    reportService.generateAsync().thenAccept(result::setResult);\n    return result;\n}",
+              "detectionPattern": "new\\s+DeferredResult<[^>]*>\\(\\s*\\)"
+            },
+            {
+              "id": "SPRING-WEBCORR-012",
+              "title": "Not setting an explicit charset on text-based media types",
+              "severity": "LOW",
+              "description": "Without an explicit charset in the produces/consumes media type (e.g. application/json;charset=UTF-8 rather than just application/json), the actual byte encoding used can vary by platform/configuration default, causing non-ASCII characters (accented letters, non-Latin scripts, emoji) to be mis-decoded on either end of the exchange.",
+              "risk": "Non-ASCII characters can be mis-decoded on either end of the exchange because the actual byte encoding used is left to platform-specific defaults.",
+              "code": "@GetMapping(value = \"/greeting\", produces = \"text/plain\") // no charset specified \u2014 encoding is left to defaults, which may differ across environments\npublic String greeting() { return \"caf\\u00e9\"; } // non-ASCII character, encoding now ambiguous",
+              "solution": "@GetMapping(value = \"/greeting\", produces = \"text/plain;charset=UTF-8\") // explicit, unambiguous encoding\npublic String greeting() { return \"caf\\u00e9\"; }",
+              "detectionPattern": "produces\\s*=\\s*\\\"(?:text/plain|text/csv|application/json)(?!;charset)[^\\\"]*\\\""
+            },
+            {
+              "id": "SPRING-WEBCORR-013",
+              "title": "Applying validation to request bodies but not to query parameters",
+              "severity": "MEDIUM",
+              "description": "A @Valid @RequestBody DTO gets full Bean Validation coverage",
+              "risk": "a sibling @RequestParam or @PathVariable on the same or a similar endpoint often gets none at all unless @Validated is explicitly added at the class level with constraint annotations on the parameters themselves \u2014 an easy, inconsistent gap that lets malformed query input reach business logic unchecked while request bodies are protected.",
+              "code": "@PostMapping(\"/orders\")\npublic Order createOrder(@Valid @RequestBody OrderRequest req) { ... } // fully validated\n@GetMapping(\"/orders\")\npublic List<Order> searchOrders(@RequestParam int minAmount) { ... } // no validation at all \u2014 a negative value sails through unchecked",
+              "solution": "@RestController\n@Validated // enables constraint validation on @RequestParam/@PathVariable at the class level\nclass OrderController {\n    @GetMapping(\"/orders\")\n    public List<Order> searchOrders(@RequestParam @Min(0) int minAmount) { ... } // now validated consistently with the request-body case\n}",
+              "detectionPattern": "NO_ANNOTATION_HEURISTIC: @RequestParam/@PathVariable with an obvious valid-range constraint but no @Validated at the class level and no constraint annotation on the parameter itself"
+            },
+            {
+              "id": "SPRING-WEBCORR-014",
+              "title": "Serializing monetary values as JSON floating-point numbers",
+              "severity": "MEDIUM",
+              "description": "JSON numbers are typically parsed as IEEE-754 doubles by many client languages/libraries",
+              "risk": "serializing a BigDecimal monetary amount as a plain JSON number risks precision loss on the client side (e.g. 19.999999999999996 instead of 20.00) even if the server-side value was perfectly precise, purely because of how the client's JSON parser represents numbers.",
+              "code": "class OrderDto {\n    private BigDecimal total; // serialized by default as a JSON number, e.g. 19.99 \u2014 some client parsers may not preserve this exactly\n}",
+              "solution": "class OrderDto {\n    @JsonSerialize(using = ToStringSerializer.class) // serialized as the STRING \"19.99\", guaranteeing exact precision on any client\n    private BigDecimal total;\n}\n// Or serialize as a scaled integer (cents) with the currency's minor-unit count documented separately",
+              "detectionPattern": "NO_ANNOTATION_HEURISTIC: BigDecimal-typed DTO field (not a JPA @Entity field, which is never directly serialized) representing money, serialized as a plain JSON number with no explicit string-based or scaled-integer strategy"
+            }
+          ]
+        },
+        {
+          "name": "Web Performance",
+          "category": "PERFORMANCE",
+          "practices": [
+            {
+              "id": "SPRING-WEBPERF-001",
+              "title": "Not implementing pagination for list endpoints with unbounded result sets",
+              "severity": "HIGH",
+              "description": "A list endpoint that returns 'all' matching records without limit works fine in testing with a handful of rows",
+              "risk": "as the underlying table grows, the same endpoint can eventually try to serialize and transmit millions of records in a single response, exhausting memory and network bandwidth for both server and client.",
+              "code": "@GetMapping(\"/orders\")\npublic List<Order> getAllOrders() { // no limit at all \u2014 returns every order in the table, however many there are\n    return orderRepository.findAll();\n}",
+              "solution": "@GetMapping(\"/orders\")\npublic Page<Order> getOrders(@RequestParam(defaultValue = \"0\") int page,\n                              @RequestParam(defaultValue = \"20\") int size) {\n    return orderRepository.findAll(PageRequest.of(page, Math.min(size, 100))); // bounded, with a sensible max page size\n}",
+              "detectionPattern": "@GetMapping\\([^)]*\\)\\s*\\n\\s*(?:public\\s+)?List<[^>]*>\\s+\\w+\\([^)]*\\)\\s*\\{(?:(?!\\}).)*?\\.findAll\\(\\)"
+            },
+            {
+              "id": "SPRING-WEBPERF-002",
+              "title": "Not setting Cache-Control/ETag headers for cacheable GET resources",
+              "severity": "LOW",
+              "description": "A GET endpoint serving data that rarely changes (reference data, a public catalog) but returning no caching headers forces every client and intermediary (CDN, browser, proxy) to re-fetch the full response every single time, wasting bandwidth and server load that a simple Cache-Control or ETag header could have avoided entirely.",
+              "risk": "Every client and intermediary has to re-fetch the full response every single time, wasting bandwidth and server load a simple header could have avoided entirely.",
+              "code": "@GetMapping(\"/countries\")\npublic List<Country> getCountries() { // rarely-changing reference data, no caching headers at all\n    return countryService.findAll();\n}",
+              "solution": "@GetMapping(\"/countries\")\npublic ResponseEntity<List<Country>> getCountries() {\n    return ResponseEntity.ok()\n        .cacheControl(CacheControl.maxAge(Duration.ofHours(24)).cachePublic())\n        .body(countryService.findAll());\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: GET endpoint serving infrequently-changing reference/catalog data with no Cache-Control, ETag, or Last-Modified header"
+            },
+            {
+              "id": "SPRING-WEBPERF-003",
+              "title": "Not supporting conditional requests for expensive-to-generate resources",
+              "severity": "LOW",
+              "description": "Without ETag/If-None-Match support, a client that already has the current version of a resource still has to download the full response again to confirm nothing changed",
+              "risk": "conditional requests let the server respond with a cheap 304 Not Modified when the content is unchanged, saving both server computation and network transfer for expensive resources.",
+              "code": "@GetMapping(\"/reports/{id}\")\npublic Report getReport(@PathVariable Long id) { // expensive to generate, but no ETag support \u2014 always fully regenerated and transferred\n    return reportService.generate(id);\n}",
+              "solution": "@GetMapping(\"/reports/{id}\")\npublic ResponseEntity<Report> getReport(@PathVariable Long id, WebRequest request) {\n    String etag = reportService.currentEtag(id);\n    if (request.checkNotModified(etag)) {\n        return null; // Spring automatically returns 304 Not Modified\n    }\n    return ResponseEntity.ok().eTag(etag).body(reportService.generate(id));\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: GET endpoint for a computationally expensive or large resource with no ETag/If-None-Match conditional-request handling"
+            },
+            {
+              "id": "SPRING-WEBPERF-004",
+              "title": "Forcing N individual API calls instead of providing a batch endpoint",
+              "severity": "MEDIUM",
+              "description": "If a client routinely needs to fetch or update many individual resources by ID (e.g. 100 order statuses), and the API only offers a single-resource endpoint, the client is forced into N round-trips",
+              "risk": "each with its own latency, connection overhead, and failure mode \u2014 when one well-designed batch endpoint could satisfy the same need in a single call.",
+              "code": "@GetMapping(\"/orders/{id}\")\npublic Order getOrder(@PathVariable Long id) { ... }\n// A client needing 100 orders makes 100 separate HTTP requests, each paying full round-trip latency",
+              "solution": "@GetMapping(\"/orders\")\npublic List<Order> getOrdersByIds(@RequestParam List<Long> ids) { // one request, one round trip\n    return orderService.findAllByIds(ids);\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: client code calling a single-resource endpoint N times in a row for what is logically one batch operation, with no batch endpoint offered"
+            }
+          ]
+        },
+        {
+          "name": "Web Security",
+          "category": "SECURITY",
+          "practices": [
+            {
+              "id": "SPRING-WEBSEC-001",
+              "title": "Using a wide-open, global CORS configuration",
+              "severity": "CRITICAL",
+              "description": "@CrossOrigin(\"*\") or an equivalent global CorsConfiguration allowing any origin removes the browser's same-origin protection entirely for that API, letting any website make authenticated cross-origin requests on behalf of a logged-in user (if cookies/credentials are also allowed)",
+              "risk": "a significant CSRF-adjacent exposure for anything beyond a fully public, unauthenticated API.",
+              "code": "@CrossOrigin(origins = \"*\", allowCredentials = \"true\") // combining wildcard origin with credentials is especially dangerous, and some browsers reject it outright\n@RestController\nclass OrderController { ... }",
+              "solution": "@Bean\nCorsConfigurationSource corsConfigurationSource() {\n    CorsConfiguration config = new CorsConfiguration();\n    config.setAllowedOrigins(List.of(\"https://app.example.com\")); // explicit, known origins only\n    config.setAllowCredentials(true);\n    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();\n    source.registerCorsConfiguration(\"/**\", config);\n    return source;\n}",
+              "detectionPattern": "@CrossOrigin\\([^)]*origins\\s*=\\s*\\\"\\*\\\"|setAllowedOrigins\\(\\s*(?:List\\.of|Arrays\\.asList)\\(\\s*\\\"\\*\\\"\\s*\\)\\)"
+            },
+            {
+              "id": "SPRING-WEBSEC-002",
+              "title": "Not implementing rate limiting on public-facing API endpoints",
+              "severity": "HIGH",
+              "description": "Without any rate limiting, a single client (malicious or simply misbehaving due to a retry-loop bug) can send an unbounded volume of requests, degrading service for every other user and potentially exhausting downstream resources (database connections, third-party API quotas) that are shared across all traffic.",
+              "risk": "A single client can degrade service for every other user and exhaust downstream resources shared across all traffic.",
+              "code": "@PostMapping(\"/login\") // no rate limiting at all \u2014 vulnerable to brute-force attempts or simple retry-storm bugs from any single client\npublic ResponseEntity<?> login(@RequestBody LoginRequest req) { ... }",
+              "solution": "// Apply rate limiting at the gateway/filter level (e.g. Bucket4j, Resilience4j RateLimiter, or an API gateway)\n// so that abusive or runaway traffic from a single client/IP is throttled before it can affect other users\n@PostMapping(\"/login\")\n@RateLimited(permitsPerMinute = 5) // conceptual example \u2014 actual implementation via a filter/interceptor/library\npublic ResponseEntity<?> login(@RequestBody LoginRequest req) { ... }",
+              "detectionPattern": "NO_CLEAN_REGEX: public, unauthenticated, or otherwise abuse-prone endpoint with no rate-limiting mechanism anywhere in the request path"
+            },
+            {
+              "id": "SPRING-WEBSEC-003",
+              "title": "Leaving Spring Boot's default error handling exposing stack traces in production",
+              "severity": "HIGH",
+              "description": "Spring Boot's default error attributes can include the exception's stack trace in the JSON error response if server.error.include-stacktrace is left at (or set to) 'always'",
+              "risk": "in production, this leaks internal implementation details (class names, line numbers, library versions) to any client that triggers an error.",
+              "code": "server:\n  error:\n    include-stacktrace: always # exposes full stack traces in every error response, in every environment including production",
+              "solution": "server:\n  error:\n    include-stacktrace: never # or 'on_param' scoped to trusted internal diagnostics only\n    include-message: never # combined with a custom @ControllerAdvice for a clean, safe error contract",
+              "detectionPattern": "include-stacktrace:\\s*always"
+            },
+            {
+              "id": "SPRING-WEBSEC-004",
+              "title": "Returning DTOs that include sensitive internal fields via naive entity-to-DTO mapping",
+              "severity": "CRITICAL",
+              "description": "Using a generic object mapper (or a naive manual mapper) that copies every field from an entity to a DTO by matching names can accidentally carry over sensitive fields",
+              "risk": "password hashes, internal audit columns, other users' foreign keys \u2014 into the public API response simply because the DTO happened to declare a same-named field for an unrelated reason.",
+              "code": "class UserDto {\n    String username;\n    String passwordHash; // exists on the DTO for an internal reason, but a generic mapper copies the entity's real hash straight into it\n}\nUserDto dto = modelMapper.map(userEntity, UserDto.class); // passwordHash leaks into the API response",
+              "solution": "class UserDto {\n    String username; // deliberately excludes passwordHash and other internal fields entirely\n}\nUserDto dto = new UserDto(userEntity.getUsername()); // explicit mapping, only ever includes what's meant to be public",
+              "detectionPattern": "NO_ANNOTATION_HEURISTIC: DTO field named identically to a sensitive entity field (password, secret, token) populated via a generic/reflection-based mapper rather than explicit field-by-field mapping"
+            },
+            {
+              "id": "SPRING-WEBSEC-005",
+              "title": "Not enforcing a request body size limit",
+              "severity": "MEDIUM",
+              "description": "Without an explicit maximum request size, a client (malicious or buggy) can send an arbitrarily large request body, forcing the server to buffer and attempt to process it",
+              "risk": "a cheap way to exhaust memory or bandwidth on the server side, especially against endpoints that don't otherwise need large payloads.",
+              "code": "# No server.tomcat.max-http-form-post-size / spring.servlet.multipart.max-file-size configured anywhere\n# A client can POST a multi-gigabyte body to any endpoint with no server-side rejection",
+              "solution": "server:\n  tomcat:\n    max-http-form-post-size: 2MB\nspring:\n  servlet:\n    multipart:\n      max-file-size: 10MB\n      max-request-size: 10MB\n# Explicit, sensible upper bounds appropriate to what each endpoint legitimately needs",
+              "detectionPattern": "NO_CLEAN_REGEX: application configuration with no explicit max request/file size settings for an API accepting bodies or uploads from untrusted clients"
+            },
+            {
+              "id": "SPRING-WEBSEC-006",
+              "title": "Not controlling JSON serialization exposure via @JsonIgnore/@JsonProperty",
+              "severity": "MEDIUM",
+              "description": "Without explicit control over which fields (and computed getters) get serialized, a DTO or entity can leak internal-only fields (a computed cache flag, an internal status enum ordinal, a bidirectional relationship back-reference) into the public API response simply because they happen to have a public getter Jackson picks up by convention.",
+              "risk": "A DTO or entity can leak internal-only fields into the public API response simply because they happen to have a public getter Jackson picks up by convention.",
+              "code": "class OrderDto {\n    private String status;\n    public boolean isInternalFlagged() { return internalRiskScore > 80; } // a getter, so Jackson serializes it as \"internalFlagged\" \u2014 never intended to be public\n    private int internalRiskScore;\n}",
+              "solution": "class OrderDto {\n    private String status;\n    @JsonIgnore\n    public boolean isInternalFlagged() { return internalRiskScore > 80; } // explicitly excluded from serialization\n    @JsonIgnore\n    private int internalRiskScore;\n}",
+              "detectionPattern": "NO_ANNOTATION_HEURISTIC: public getter for a computed internal-only value serialized by Jackson with no @JsonIgnore"
+            },
+            {
+              "id": "SPRING-WEBSEC-007",
+              "title": "Inconsistent authentication/authorization enforcement across sibling endpoints on the same resource",
+              "severity": "CRITICAL",
+              "description": "If GET /orders/{id} requires authentication but DELETE /orders/{id} on the exact same resource was accidentally left unsecured (a missing @PreAuthorize, a gap in the security filter chain's path matching), an attacker can bypass the read protection entirely and go straight for the unprotected write operation.",
+              "risk": "An attacker can bypass the read protection entirely and go straight for the unprotected write operation on the exact same resource.",
+              "code": "@GetMapping(\"/orders/{id}\")\n@PreAuthorize(\"hasRole('USER')\")\npublic Order getOrder(@PathVariable Long id) { ... }\n@DeleteMapping(\"/orders/{id}\") // no @PreAuthorize at all \u2014 anyone can delete any order\npublic void deleteOrder(@PathVariable Long id) { ... }",
+              "solution": "@GetMapping(\"/orders/{id}\")\n@PreAuthorize(\"hasRole('USER')\")\npublic Order getOrder(@PathVariable Long id) { ... }\n@DeleteMapping(\"/orders/{id}\")\n@PreAuthorize(\"hasRole('USER') and @orderSecurity.isOwner(#id, principal)\") // consistently secured, with appropriate additional ownership check\npublic void deleteOrder(@PathVariable Long id) { ... }",
+              "detectionPattern": "NO_CLEAN_REGEX: a resource with some HTTP-method handlers carrying authorization annotations and sibling handlers on the same resource with none"
+            },
+            {
+              "id": "SPRING-WEBSEC-008",
+              "title": "Trusting client-provided Content-Type/filename on file uploads without server-side validation",
+              "severity": "CRITICAL",
+              "description": "The Content-Type header and original filename in a multipart upload are entirely client-controlled and easily spoofed",
+              "risk": "accepting them at face value to decide how to store or process a file (e.g. trusting 'image/png' to skip virus scanning, or using the raw filename as a storage path) lets an attacker upload disguised malicious content or manipulate storage paths.",
+              "code": "@PostMapping(\"/upload\")\npublic void upload(@RequestParam MultipartFile file) {\n    String path = \"/uploads/\" + file.getOriginalFilename(); // trusts client filename entirely \u2014 could contain \"../\" or a malicious extension\n    Files.write(Path.of(path), file.getBytes());\n}",
+              "solution": "@PostMapping(\"/upload\")\npublic void upload(@RequestParam MultipartFile file) {\n    String detectedType = Tika.detect(file.getInputStream()); // inspects actual file content, not the claimed Content-Type\n    if (!ALLOWED_TYPES.contains(detectedType)) throw new UnsupportedFileTypeException();\n    String safeName = UUID.randomUUID() + getExtensionFor(detectedType); // server-generated name, no client input in the path\n    Files.write(Path.of(\"/uploads\", safeName), file.getBytes());\n}",
+              "detectionPattern": "\\+\\s*\\w+\\.getOriginalFilename\\(\\)"
+            },
+            {
+              "id": "SPRING-WEBSEC-009",
+              "title": "Constructing file system paths from unsanitized path variables",
+              "severity": "CRITICAL",
+              "description": "If a @PathVariable value is concatenated directly into a file system path with no validation, a request containing '../' sequences can escape the intended directory entirely, reading (or in a write endpoint, overwriting) arbitrary files elsewhere on the server's file system.",
+              "risk": "A request containing '../' sequences can escape the intended directory entirely, reading or overwriting arbitrary files elsewhere on the server's file system.",
+              "code": "@GetMapping(\"/files/{filename}\")\npublic ResponseEntity<byte[]> download(@PathVariable String filename) throws IOException {\n    Path path = Paths.get(\"/data/uploads/\" + filename); // \"../../etc/passwd\" as filename escapes the uploads directory entirely\n    return ResponseEntity.ok(Files.readAllBytes(path));\n}",
+              "solution": "@GetMapping(\"/files/{filename}\")\npublic ResponseEntity<byte[]> download(@PathVariable String filename) throws IOException {\n    Path base = Paths.get(\"/data/uploads\").normalize();\n    Path resolved = base.resolve(filename).normalize();\n    if (!resolved.startsWith(base)) throw new IllegalArgumentException(\"Invalid file path\"); // rejects any traversal attempt\n    return ResponseEntity.ok(Files.readAllBytes(resolved));\n}",
+              "detectionPattern": "(?:Paths\\.get|new File)\\(\\s*\\\"[^\\\"]*\\\"\\s*\\+\\s*\\w+\\s*\\)"
+            },
+            {
+              "id": "SPRING-WEBSEC-010",
+              "title": "Not validating actual file content against the claimed file type",
+              "severity": "HIGH",
+              "description": "Checking only the file extension or the client-supplied Content-Type header to decide whether an uploaded file is 'safe' (e.g. an image) can be trivially bypassed by renaming a malicious executable to something.jpg",
+              "risk": "inspecting the file's actual magic bytes/content signature is the only way to verify what a file actually is, independent of what it claims to be.",
+              "code": "@PostMapping(\"/avatar\")\npublic void uploadAvatar(@RequestParam MultipartFile file) {\n    if (!file.getOriginalFilename().endsWith(\".jpg\")) { // trusts the extension alone\n        throw new InvalidFileException();\n    }\n    storage.save(file); // a renamed executable with a .jpg extension sails right through",
+              "solution": "@PostMapping(\"/avatar\")\npublic void uploadAvatar(@RequestParam MultipartFile file) {\n    String actualType = Tika.detect(file.getInputStream()); // inspects real file content\n    if (!Set.of(\"image/jpeg\", \"image/png\").contains(actualType)) {\n        throw new InvalidFileException();\n    }\n    storage.save(file);\n}",
+              "detectionPattern": "NO_ANNOTATION_HEURISTIC: file upload handler validating type via getOriginalFilename()/getContentType() only, with no content-based magic-byte verification"
+            },
+            {
+              "id": "SPRING-WEBSEC-011",
+              "title": "Ignoring the Vary header when responses differ by content negotiation",
+              "severity": "MEDIUM",
+              "description": "If a single URL can return different representations depending on a request header (Accept-Language, Accept for content negotiation, an API-version header), an intermediary cache that doesn't know this",
+              "risk": "because the response never declared Vary \u2014 can serve one client's cached response (e.g. in French) to a different client that requested another language entirely, a form of cache poisoning caused purely by a missing header.",
+              "code": "@GetMapping(\"/greeting\")\npublic String greeting(@RequestHeader(\"Accept-Language\") String lang) {\n    return translate(\"greeting\", lang); // response content varies by header, but no Vary header tells caches this",
+              "solution": "@GetMapping(\"/greeting\")\npublic ResponseEntity<String> greeting(@RequestHeader(\"Accept-Language\") String lang) {\n    return ResponseEntity.ok()\n        .header(HttpHeaders.VARY, \"Accept-Language\") // tells any cache to key its stored responses by this header too\n        .body(translate(\"greeting\", lang));\n}",
+              "detectionPattern": "NO_CLEAN_REGEX: cacheable endpoint whose response content varies by request header with no corresponding Vary header naming that header"
+            },
+            {
+              "id": "SPRING-WEBSEC-012",
+              "title": "Missing Secure/HttpOnly/SameSite flags on cookies carrying session or auth tokens",
+              "severity": "HIGH",
+              "description": "A cookie without Secure can be sent over plain HTTP if an attacker downgrades the connection",
+              "risk": "without HttpOnly, it's readable by JavaScript (and thus by an XSS payload); without an appropriate SameSite value, it can be sent along with cross-site requests, enabling CSRF. Omitting any of these on an authentication cookie removes a layer of defense with essentially no benefit.",
+              "code": "ResponseCookie cookie = ResponseCookie.from(\"session\", token).build(); // no secure(), no httpOnly(), no sameSite() \u2014 all default to the least protective option",
+              "solution": "ResponseCookie cookie = ResponseCookie.from(\"session\", token)\n    .httpOnly(true)\n    .secure(true)\n    .sameSite(\"Strict\")\n    .path(\"/\")\n    .maxAge(Duration.ofHours(1))\n    .build();",
+              "detectionPattern": "ResponseCookie\\.from\\([^)]*\\)(?![\\s\\S]{0,200}?\\.httpOnly\\(\\s*true\\s*\\))"
+            }
+          ]
         }
       ]
     },
