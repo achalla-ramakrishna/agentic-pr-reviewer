@@ -1,0 +1,30 @@
+meta {
+  name: Login as agent
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "username": "agent",
+    "password": "agent123"
+  }
+}
+
+script:post-response {
+  // Store the JWT so every other request can use {{token}}
+  bru.setEnvVar("token", res.body.accessToken);
+}
+
+tests {
+  test("returns a bearer token", function() {
+    expect(res.status).to.equal(200);
+    expect(res.body.tokenType).to.equal("Bearer");
+  });
+}

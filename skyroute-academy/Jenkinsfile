@@ -1,0 +1,113 @@
+// Declarative pipeline for SkyRoute. Groovy DSL; runs on any agent with JDK 17, Maven, Node 20 and Docker.
+// Paths are relative to skyroute-academy/. If this folder sits inside a bigger repo, set the job's
+// "Script Path" to skyroute-academy/Jenkinsfile and wrap the stages in dir('skyroute-academy') { ... }.
+// Jenkins credentials expected: 'sonar-token' (secret text), 'registry-creds' (username/password).
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        IMAGE = "registry.example.com/skyroute/skyroute-api"
+        // Short git sha as the immutable image tag
+        TAG = "${env.GIT_COMMIT?.take(8) ?: 'local'}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Backend: build & unit tests') {
+            steps {
+                dir('backend') {
+                    // JUnit + Mockito + Spock run in `test`; Testcontainers ITs in `verify`.
+                    sh 'mvn -B -ntp clean verify'
+                }
+            }
+            post {
+                always {
+                    junit testResults: 'backend/target/surefire-reports/*.xml, backend/target/failsafe-reports/*.xml',
+                          allowEmptyResults: true
+                    jacoco execPattern: 'backend/target/jacoco.exec'
+                }
+            }
+        }
+
+        stage('Static analysis (SonarQube)') {
+            steps {
+                dir('backend') {
+                    withSonarQubeEnv('sonarqube') {
+                        sh 'mvn -B -ntp sonar:sonar -Dsonar.projectKey=skyroute-api'
+                    }
+                }
+            }
+        }
+
+        stage('Quality gate') {
+            steps {
+                // Requires a SonarQube webhook pointing at <jenkins>/sonarqube-webhook/
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Frontend: build & e2e') {
+            steps {
+                dir('frontend') {
+                    sh 'npm ci'
+                    sh 'npx playwright install --with-deps chromium'
+                    sh 'CI=true npm run test:e2e'
+                }
+            }
+            post {
+                always {
+                    junit testResults: 'frontend/test-results/junit.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'frontend/playwright-report/**', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Docker image') {
+            when { branch 'main' }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'registry-creds',
+                        usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+                    sh '''
+                        echo "$REG_PASS" | docker login registry.example.com -u "$REG_USER" --password-stdin
+                        docker build -t "$IMAGE:$TAG" backend
+                        docker push "$IMAGE:$TAG"
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to dev') {
+            when { branch 'main' }
+            steps {
+                sh './ci/deploy.sh dev "$TAG"'
+            }
+        }
+
+        stage('Deploy to prod') {
+            when { branch 'main' }
+            steps {
+                input message: "Promote ${TAG} to production?", ok: 'Deploy'
+                sh './ci/deploy.sh prod "$TAG"'
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Build failed: ${env.BUILD_URL}"
+            // e.g. slackSend channel: '#skyroute-ci', color: 'danger', message: "..."
+        }
+    }
+}

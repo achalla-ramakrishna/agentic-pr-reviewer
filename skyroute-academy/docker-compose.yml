@@ -1,0 +1,36 @@
+# Local stack: MongoDB as a single-node replica set (needed for transactions and change streams),
+# mongo-express UI, and the API. Run: docker compose up -d
+services:
+  mongo:
+    image: mongo:7.0
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # Initiates the replica set on first start, then reports healthy.
+      test: ["CMD", "mongosh", "--quiet", "--eval",
+             "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }"]
+      interval: 5s
+      retries: 20
+
+  mongo-express:
+    image: mongo-express:1.0.2
+    ports: ["8081:8081"]
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017/?replicaSet=rs0
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      mongo: { condition: service_healthy }
+
+  api:
+    build: ./backend
+    ports: ["8080:8080", "9090:9090"]
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/skyroute?replicaSet=rs0
+      SKYROUTE_SEED: "true"
+    depends_on:
+      mongo: { condition: service_healthy }
+
+volumes:
+  mongo-data:

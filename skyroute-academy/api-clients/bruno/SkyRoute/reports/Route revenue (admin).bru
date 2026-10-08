@@ -1,0 +1,15 @@
+meta {
+  name: Route revenue (admin)
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/reports/route-revenue?from=2026-01-01&to=2026-12-31
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

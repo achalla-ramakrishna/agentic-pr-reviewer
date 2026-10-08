@@ -1,0 +1,13 @@
+:root { font-family: system-ui, sans-serif; color: #1b2430; background: #f4f6f9; }
+body { margin: 0; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 0 24px; background: #0b3d6e; color: #fff; }
+header a, header .link { color: #fff; margin-left: 16px; background: none; border: 0; cursor: pointer; font: inherit; text-decoration: underline; }
+main { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+.card { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.card.row { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
+label { display: flex; flex-direction: column; font-size: 13px; gap: 4px; }
+input, select, button { padding: 6px 8px; font-size: 14px; }
+button { background: #0b3d6e; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+table { width: 100%; border-collapse: collapse; background: #fff; }
+th, td { padding: 8px; border-bottom: 1px solid #e3e7ee; text-align: left; }
+.error { background: #fde8e8; color: #8a1c1c; padding: 8px 12px; border-radius: 4px; }

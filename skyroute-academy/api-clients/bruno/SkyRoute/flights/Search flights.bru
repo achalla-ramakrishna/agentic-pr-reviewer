@@ -1,0 +1,22 @@
+meta {
+  name: Search flights
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/flights/search?origin={{origin}}&destination={{destination}}&date={{date}}&cabin=ECONOMY&passengers=2&sort=FARE
+  body: none
+  auth: none
+}
+
+script:post-response {
+  if (res.body.length > 0) bru.setEnvVar("flightId", res.body[0].id);
+}
+
+tests {
+  test("sorted by fare", function() {
+    const fares = res.body.map(f => f.fare);
+    expect(fares).to.deep.equal([...fares].sort((a, b) => a - b));
+  });
+}

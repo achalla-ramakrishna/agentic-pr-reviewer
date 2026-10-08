@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+// Internal, high-throughput availability API for other services and distribution
+// channels (e.g. an OTA gateway). REST serves the web app; gRPC serves machines.
+package skyroute.v1;
+
+option java_multiple_files = true;
+option java_package = "com.skyroute.grpc.proto";
+option java_outer_classname = "FlightAvailabilityProto";
+
+service FlightAvailability {
+  // Unary: one request, one response.
+  rpc Search (AvailabilityRequest) returns (AvailabilityResponse);
+  // Server streaming: the server pushes one message per flight as it is read.
+  rpc StreamRoute (AvailabilityRequest) returns (stream FlightOption);
+}
+
+enum Cabin {
+  CABIN_UNSPECIFIED = 0; // proto3 rule: the zero value is the default, make it meaningless
+  ECONOMY = 1;
+  PREMIUM_ECONOMY = 2;
+  BUSINESS = 3;
+  FIRST = 4;
+}
+
+message AvailabilityRequest {
+  string origin = 1;          // IATA code, e.g. "DFW"
+  string destination = 2;
+  string date = 3;            // ISO date "2026-11-01"
+  Cabin cabin = 4;
+  int32 passengers = 5;
+}
+
+message Money {
+  // Money as a decimal string; never use float/double for currency.
+  string amount = 1;
+  string currency = 2;
+}
+
+message FlightOption {
+  string flight_id = 1;
+  string flight_number = 2;
+  string origin = 3;
+  string destination = 4;
+  int64 departure_epoch_seconds = 5;
+  int64 arrival_epoch_seconds = 6;
+  int32 seats_available = 7;
+  Money fare = 8;
+  string status = 9;
+}
+
+message AvailabilityResponse {
+  repeated FlightOption options = 1;
+}

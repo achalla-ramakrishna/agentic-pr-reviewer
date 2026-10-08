@@ -1,0 +1,37 @@
+meta {
+  name: Create booking
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/bookings
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "contactEmail": "ana.diaz@example.com",
+    "passengers": [
+      { "firstName": "Ana", "lastName": "Diaz", "type": "ADT" },
+      { "firstName": "Mia", "lastName": "Diaz", "type": "INF" }
+    ],
+    "segments": [ { "flightId": "{{flightId}}", "cabin": "ECONOMY" } ]
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("pnr", res.body.recordLocator);
+}
+
+tests {
+  test("201 with a 6-char PNR", function() {
+    expect(res.status).to.equal(201);
+    expect(res.body.recordLocator).to.match(/^[A-Z2-9]{6}$/);
+  });
+}

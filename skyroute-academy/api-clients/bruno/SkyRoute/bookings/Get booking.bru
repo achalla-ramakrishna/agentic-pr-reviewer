@@ -1,0 +1,15 @@
+meta {
+  name: Get booking
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/bookings/{{pnr}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

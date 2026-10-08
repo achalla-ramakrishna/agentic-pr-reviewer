@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: skyroute-api
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://localhost:27017/skyroute}
+      # Creates the @Indexed / @CompoundIndex indexes at startup. Fine for learning;
+      # in production prefer explicit, reviewed index scripts (see docs/04-mongodb-mastery.md).
+      auto-index-creation: true
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: 200
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,caches
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+skyroute:
+  jwt:
+    # Base64 of >= 32 random bytes. DEV DEFAULT ONLY — override with SKYROUTE_JWT_SECRET in every real env.
+    secret: ${SKYROUTE_JWT_SECRET:c2t5cm91dGUtZGV2LW9ubHktc2VjcmV0LWNoYW5nZS1tZS0zMi1ieXRlcyEhIQ==}
+    issuer: skyroute-api
+    ttl: 1h
+  grpc:
+    enabled: ${SKYROUTE_GRPC_ENABLED:true}
+    port: ${SKYROUTE_GRPC_PORT:9090}
+  cors:
+    allowed-origins:
+      - http://localhost:5173
+  seed:
+    enabled: ${SKYROUTE_SEED:true}
+
+logging:
+  level:
+    com.skyroute: INFO
+    # Uncomment to see every query Spring Data sends to MongoDB:
+    # org.springframework.data.mongodb.core.MongoTemplate: DEBUG
